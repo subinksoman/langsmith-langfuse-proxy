@@ -39,7 +39,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: langsmith-langfuse-proxy
-    image: subinksoman/langsmith-langfuse-proxy:2.0.0
+    image: subinksoman/langsmith-langfuse-proxy:2.0.1
     # The image is not published yet, so prefer the local build over a registry
     # pull that would fail. Drop this once it is on Docker Hub.
     pull_policy: missing

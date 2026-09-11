@@ -20,3 +20,7 @@ logs/
 
 # OS
 .DS_Store
+
+# Real credentials live here; the committed template is
+# config/application.properties.example
+config/application.properties

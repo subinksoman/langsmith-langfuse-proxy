@@ -154,7 +154,7 @@ public class TransformationService {
                 ObjectNode metadata = objectMapper.createObjectNode();
                 metadata.put("batch_size",      batch.size());
                 metadata.put("sdk_integration", "LANGCHAIN");
-                metadata.put("sdk_version",     "proxy-2.0.0");
+                metadata.put("sdk_version",     "proxy-2.0.1");
                 metadata.put("sdk_variant",     "langsmith-proxy");
                 metadata.put("public_key",      project.getPublicKey());
                 metadata.put("sdk_name",        "langsmith-langfuse-proxy");

@@ -1,0 +1,99 @@
+# ============================================================
+# Server Configuration
+# ============================================================
+server.port=3001
+
+# ============================================================
+# Langfuse Configuration
+# ============================================================
+langfuse.base-url=http://langfuse-web:3000
+langfuse.ingestion-endpoint=/api/public/ingestion
+
+# -- Default project credentials (catch-all) -----------------
+# MUST use the default_projects keys so untagged requests
+# go to the catch-all project, not crm/texttorule.
+langfuse.public-key=${LANGFUSE_PUBLIC_KEY:}
+langfuse.secret-key=${LANGFUSE_SECRET_KEY:}
+
+# ============================================================
+# Per-node project routing
+# ============================================================
+# This file is the TEMPLATE that ships with the repo, so it carries no values.
+# Copy it to config/application.properties (git-ignored) and fill in real keys,
+# or supply them with SPRING_APPLICATION_JSON — see CLAUDE.md.
+
+# "crm" node -> Langfuse "crm" project
+# langfuse.projects.crm.public-key=<your key>
+# langfuse.projects.crm.secret-key=<your key>
+
+# "texttorule" node -> Langfuse "texttorule" project
+# langfuse.projects.default_all_flows.public-key=<your key>
+# langfuse.projects.default_all_flows.secret-key=<your key>
+
+# "default_projects" - explicit entry (same as default above)
+# langfuse.projects.default_projects.public-key=<your key>
+# langfuse.projects.default_projects.secret-key=<your key>
+
+# "mfs"
+# langfuse.projects.mfs.public-key=<your key>
+# langfuse.projects.mfs.secret-key=<your key>
+
+# "Gen-ai-virtual-profile-creation"
+# langfuse.projects.genai_vp.public-key=<your key>
+# langfuse.projects.genai_vp.secret-key=<your key>
+
+# "CMS"
+# langfuse.projects.cms.public-key=<your key>
+# langfuse.projects.cms.secret-key=<your key>
+
+# "upc"
+# langfuse.projects.upc.public-key=<your key>
+# langfuse.projects.upc.secret-key=<your key>
+
+# "self_care"
+# langfuse.projects.self_care.public-key=<your key>
+# langfuse.projects.self_care.secret-key=<your key>
+
+# "text_to_rule"
+# langfuse.projects.temptexttorule.public-key=<your key>
+# langfuse.projects.temptexttorule.secret-key=<your key>
+
+# "crag_superset"
+# langfuse.projects.crag_superset.public-key=<your key>
+# langfuse.projects.crag_superset.secret-key=<your key>
+
+# ============================================================
+# Proxy Configuration
+# ============================================================
+proxy.log-requests=true
+proxy.log-responses=true
+proxy.timeout-seconds=30
+proxy.max-connections=100
+proxy.max-connections-per-route=20
+
+# ============================================================
+# Logging Configuration
+# ============================================================
+logging.level.root=INFO
+logging.level.com.proxy=DEBUG
+logging.level.com.proxy.config.LangfuseConfig=INFO
+logging.level.org.springframework.web=INFO
+logging.level.org.apache.hc.client5=WARN
+logging.pattern.console=%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n
+
+# ============================================================
+# Actuator
+# ============================================================
+management.endpoints.web.exposure.include=health,info
+management.endpoint.health.show-details=always
+
+# ============================================================
+# Log file rotation
+# ============================================================
+# proxy.log rolls at this size (and daily), keeping maxHistory archives up to
+# total-size-cap. Request/response payload logging is verbose, so the cap on
+# the archive as a whole matters as much as the per-file limit.
+logging.file.path=logs
+logging.file.max-size=10MB
+logging.file.max-history=30
+logging.file.total-size-cap=500MB

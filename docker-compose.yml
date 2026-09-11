@@ -8,7 +8,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: langsmith-langfuse-proxy
-    image: subinksoman/langsmith-langfuse-proxy:2.0.0
+    image: subinksoman/langsmith-langfuse-proxy:2.0.1
     # The image is not published yet, so prefer the local build over a registry
     # pull that would fail. Drop this once it is on Docker Hub.
     pull_policy: missing
@@ -20,8 +20,8 @@ services:
       # Langfuse Configuration - reached by service name over the shared network
       - LANGFUSE_BASE_URL=http://langfuse-web:3000
       - LANGFUSE_INGESTION_ENDPOINT=/api/public/ingestion
-      - LANGFUSE_PUBLIC_KEY=pk-lf-REDACTED
-      - LANGFUSE_SECRET_KEY=sk-lf-REDACTED
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:?set LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:?set LANGFUSE_SECRET_KEY}
 
       # Proxy Configuration
       - PROXY_LOG_REQUESTS=true

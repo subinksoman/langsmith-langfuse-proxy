@@ -169,7 +169,7 @@ public class ProxyController {
     public ResponseEntity<Map<String, String>> info() {
         return ResponseEntity.ok(Map.of(
             "service", "LangSmith to Langfuse Proxy",
-            "version", "2.0.0",
+            "version", "2.0.1",
             "description", "Converts LangSmith tracing data to Langfuse format"
         ));
     }
@@ -178,7 +178,7 @@ public class ProxyController {
                          "/version",   "/ok"})
     public ResponseEntity<Map<String, Object>> handleGetInfo() {
         return ResponseEntity.ok(Map.of(
-            "version", "2.0.0",
+            "version", "2.0.1",
             "batch_ingest_config", Map.of(
                 "use_multipart_endpoint", true,
                 "size_limit_bytes",       20971520,
