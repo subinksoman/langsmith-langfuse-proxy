@@ -39,9 +39,9 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: langsmith-langfuse-proxy
-    image: subinksoman/langsmith-langfuse-proxy:2.0.1
-    # The image is not published yet, so prefer the local build over a registry
-    # pull that would fail. Drop this once it is on Docker Hub.
+    image: subinksoman/langsmith-langfuse-proxy:3.0.0
+    # Prefer a locally built image over a registry pull, so `--build` during
+    # development is not silently overridden by the published tag.
     pull_policy: missing
     # Published only so the test script can post fixtures straight at it.
     # n8n reaches it in-network as http://langsmith-proxy:3001.
@@ -141,18 +141,25 @@ services:
       N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
 
       # ---- LangSmith tracing, pointed at the proxy -------------------------
-      # Both spellings are set: LangChain JS renamed these and different n8n
-      # releases bundle different SDK versions.
-      LANGCHAIN_TRACING_V2: "true"
-      LANGCHAIN_ENDPOINT: http://langsmith-proxy:3001
-      LANGCHAIN_API_KEY: lsv2-proxy-does-not-check-this
-      LANGCHAIN_PROJECT: n8n
-      LANGCHAIN_CALLBACKS_BACKGROUND: "false"
-
+      # The current names. The SDK resolves LANGSMITH_<NAME> first and only
+      # falls back to LANGCHAIN_<NAME>, so these are the ones that win:
+      #   getLangSmithEnvironmentVariable(name) =
+      #     env(`LANGSMITH_${name}`) || env(`LANGCHAIN_${name}`)
       LANGSMITH_TRACING: "true"
       LANGSMITH_ENDPOINT: http://langsmith-proxy:3001
       LANGSMITH_API_KEY: lsv2-proxy-does-not-check-this
       LANGSMITH_PROJECT: n8n
+
+      # Flush traces in the background rather than blocking the workflow on
+      # them. Its only spelling is LANGSMITH_*; "false" is what disables it,
+      # which is useful when a CLI run must flush before the process exits.
+      LANGSMITH_TRACING_BACKGROUND: "true"
+
+      # Legacy alias, kept on purpose. run_trees.js reads LANGCHAIN_ENDPOINT
+      # directly — no LANGSMITH_ fallback — and defaults to
+      # "http://localhost:1984" when it is unset. If any code path reaches it,
+      # an unset value sends traces into the void rather than erroring.
+      LANGCHAIN_ENDPOINT: http://langsmith-proxy:3001
 
     volumes:
       - n8n_data:/home/node/.n8n

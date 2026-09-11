@@ -7,6 +7,8 @@ import com.proxy.model.TransformationResult;
 import com.proxy.service.TransformationService;
 import com.proxy.service.LangfuseService;
 import com.proxy.service.MultipartRunAssembler;
+import com.proxy.service.LangfuseDispatcher;
+import org.springframework.beans.factory.annotation.Value;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,18 +32,29 @@ public class ProxyController {
     private final ProxyConfig proxyConfig;
     private final ObjectMapper objectMapper;
     private final MultipartRunAssembler multipartRunAssembler;
+    private final LangfuseDispatcher langfuseDispatcher;
+
+    /**
+     * Answer n8n as soon as the batch is queued instead of after the Langfuse
+     * round trip. Set false to forward inline, which is easier to debug because
+     * a failure surfaces in the response rather than only in the logs.
+     */
+    @Value("${proxy.async.enabled:true}")
+    private boolean asyncDelivery;
 
     @Autowired
     public ProxyController(TransformationService transformationService,
                           LangfuseService langfuseService,
                           ProxyConfig proxyConfig,
                           ObjectMapper objectMapper,
-                          MultipartRunAssembler multipartRunAssembler) {
+                          MultipartRunAssembler multipartRunAssembler,
+                          LangfuseDispatcher langfuseDispatcher) {
         this.transformationService = transformationService;
         this.langfuseService = langfuseService;
         this.proxyConfig = proxyConfig;
         this.objectMapper = objectMapper;
         this.multipartRunAssembler = multipartRunAssembler;
+        this.langfuseDispatcher = langfuseDispatcher;
     }
 
     @PostMapping(value = "/runs", consumes = MediaType.APPLICATION_JSON_VALUE)
@@ -106,7 +119,7 @@ public class ProxyController {
             }
 
             List<String> failed = new ArrayList<>();
-            int delivered = 0;
+            int handled = 0;
 
             for (TransformationResult result : results) {
                 String nodeName = result.getNodeName();
@@ -118,28 +131,42 @@ public class ProxyController {
                     logger.debug("Transformed data (node='{}'): {}", nodeName, result.getPayload().toString());
                 }
 
-                if (langfuseService.sendToLangfuse(result.getPayload(), nodeName)) {
-                    delivered++;
-                } else {
-                    failed.add(nodeName != null ? nodeName : "(default)");
-                }
+                boolean ok = asyncDelivery
+                        ? langfuseDispatcher.submit(result.getPayload(), nodeName)
+                        : langfuseService.sendToLangfuse(result.getPayload(), nodeName);
+
+                if (ok) handled++;
+                else failed.add(nodeName != null ? nodeName : "(default)");
             }
 
             if (failed.isEmpty()) {
-                logger.info("Successfully forwarded {} batch(es) to Langfuse", delivered);
+                // Accepted, not delivered: with async on, the batch is queued and
+                // the Langfuse round trip has not happened yet. Saying "success"
+                // would claim more than is known.
+                if (asyncDelivery) {
+                    logger.info("Queued {} batch(es) for Langfuse (queue depth {})",
+                            handled, langfuseDispatcher.queueDepth());
+                    return ResponseEntity.accepted().body(Map.of(
+                        "status", "accepted",
+                        "message", "Batches queued for Langfuse",
+                        "batches", handled,
+                        "queueDepth", langfuseDispatcher.queueDepth()
+                    ));
+                }
+                logger.info("Successfully forwarded {} batch(es) to Langfuse", handled);
                 return ResponseEntity.ok(Map.of(
                     "status", "success",
                     "message", "Data forwarded to Langfuse",
-                    "batches", delivered
+                    "batches", handled
                 ));
             }
 
-            logger.error("Failed to forward {} of {} batch(es) to Langfuse (nodes: {})",
-                    failed.size(), results.size(), failed);
+            logger.error("Could not {} {} of {} batch(es) (nodes: {})",
+                    asyncDelivery ? "queue" : "forward", failed.size(), results.size(), failed);
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(Map.of(
                 "status", "error",
-                "message", "Failed to forward to Langfuse",
-                "delivered", delivered,
+                "message", asyncDelivery ? "Delivery queue full" : "Failed to forward to Langfuse",
+                "handled", handled,
                 "failedNodes", failed
             ));
 
@@ -152,16 +179,25 @@ public class ProxyController {
         }
     }
 
+
     @PostMapping(value = "/runs/batch", consumes = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<Map<String, Object>> handleBatchRuns(@RequestBody String requestBody) {
         return handleRuns(requestBody);
     }
 
     @GetMapping("/health")
-    public ResponseEntity<Map<String, String>> health() {
+    public ResponseEntity<Map<String, Object>> health() {
         return ResponseEntity.ok(Map.of(
             "status", "healthy",
-            "service", "langsmith-langfuse-proxy"
+            "service", "langsmith-langfuse-proxy",
+            "delivery", asyncDelivery ? "async" : "sync",
+            // A queue that keeps growing means Langfuse is not keeping up;
+            // dropped is the count that actually lost data.
+            "queueDepth", langfuseDispatcher.queueDepth(),
+            "accepted",  langfuseDispatcher.acceptedCount(),
+            "delivered", langfuseDispatcher.deliveredCount(),
+            "failed",    langfuseDispatcher.failedCount(),
+            "dropped",   langfuseDispatcher.droppedCount()
         ));
     }
 
@@ -169,7 +205,7 @@ public class ProxyController {
     public ResponseEntity<Map<String, String>> info() {
         return ResponseEntity.ok(Map.of(
             "service", "LangSmith to Langfuse Proxy",
-            "version", "2.0.1",
+            "version", "3.0.0",
             "description", "Converts LangSmith tracing data to Langfuse format"
         ));
     }
@@ -178,7 +214,7 @@ public class ProxyController {
                          "/version",   "/ok"})
     public ResponseEntity<Map<String, Object>> handleGetInfo() {
         return ResponseEntity.ok(Map.of(
-            "version", "2.0.1",
+            "version", "3.0.0",
             "batch_ingest_config", Map.of(
                 "use_multipart_endpoint", true,
                 "size_limit_bytes",       20971520,

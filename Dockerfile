@@ -6,15 +6,20 @@ FROM maven:3.9.5-eclipse-temurin-17 AS builder
 # Set working directory
 WORKDIR /app
 
-# Copy pom.xml and download dependencies (cached layer)
+# Copy pom.xml and warm the dependency cache.
+#
+# The cache mount is what makes this cheap. Without it, editing pom.xml — a
+# version bump is enough — invalidates this layer and re-downloads every
+# dependency, turning a 15s rebuild into minutes. The mount keeps ~/.m2 across
+# builds, so the layer re-runs but downloads nothing.
 COPY pom.xml .
-RUN mvn dependency:go-offline -B
+RUN --mount=type=cache,target=/root/.m2 mvn dependency:go-offline -B
 
 # Copy source code
 COPY src ./src
 
 # Build the application
-RUN mvn clean package -DskipTests -B
+RUN --mount=type=cache,target=/root/.m2 mvn clean package -DskipTests -B
 
 # Stage 2: Create the runtime image
 FROM eclipse-temurin:17-jre-alpine

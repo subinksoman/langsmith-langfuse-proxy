@@ -79,11 +79,24 @@ an execution sibling. Unresolved traces go to the default project.
   `n8n publish:workflow --id=<id>` followed by a container restart.
 - The n8n CLI starts its own task-runner broker, so `n8n execute` needs
   `N8N_RUNNERS_ENABLED=false`.
+- **A sub-node expression resolves against its parent node's input item.** Use
+  `{{ $json.<field> }}`; a `$('Other Node')` reference from a sub-node can fail
+  with an opaque "Error in sub-node X" that appears nowhere in the logs. This
+  matters for a memory node's `sessionKey`: read the value from the item the
+  agent was given, not from the raw webhook body, or a request that arrives
+  without a sessionId has no key and the whole execution fails.
 
 ## Conventions
 
 - The chat contract is `sessionId` (the conversation, and the memory key) and
-  `msg_id` (one webhook call, one trace). Never conflate them.
+  `msg_id` (one user message). Never conflate them. Both are minted at the
+  entry node when the caller omits them, and only there — a second mint
+  downstream would split one message across two traces — and both are echoed
+  in the response so the caller can reuse the session on its next turn.
+- One user message is **one Langfuse trace**, keyed on a hash of
+  (sessionId, msg_id), with every agent, sub-agent and tool of that message as
+  observations inside it. `execution_id` / `node_execution_id` identify a single
+  agent execution and live on the observations, for debugging and retries.
 - Missing `user_id` defaults to `sixdee`.
 - Logs roll at 10MB, 30 archives, 500MB total; tune with `logging.file.*`.
   Per-request access lines are DEBUG — the healthcheck hits `/health` every 15s.

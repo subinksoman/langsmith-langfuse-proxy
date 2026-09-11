@@ -46,6 +46,34 @@ public class TraceContextCache {
 
         /** true when sessionId came from real n8n context, not a fallback guess. */
         public boolean sessionIdIsReliable;
+
+        /** The logical user message this trace belongs to, if declared. */
+        public String msgId;
+
+        /** The n8n execution, used to group when nothing else was declared. */
+        public String executionId;
+
+        /**
+         * Whether the trace's input has already been written.
+         *
+         * One user message is one trace, but it is assembled from several n8n
+         * executions arriving as separate requests. Only the first of them holds
+         * the user's question; a later agent's input is its own prompt, and
+         * writing it would replace the question on the trace.
+         */
+        public boolean inputSet;
+
+        /**
+         * Whether THIS batch must not supply the trace input — distinct from
+         * inputSet, which records that the input has already been written.
+         *
+         * A tool call adopted into the message carries the tool's argument, not
+         * the user's question, so it must stay silent; but it must not claim the
+         * input was set, or a tool call arriving before the message's own batch
+         * would leave the trace input empty forever. Deliberately never copied
+         * from a cached context: it describes one batch, not the trace.
+         */
+        public boolean suppressInput;
     }
 
     /** The create-side fields of a single observation, replayed onto its PATCH. */
@@ -181,6 +209,105 @@ public class TraceContextCache {
         if (msgId     != null && !msgId.isEmpty())     ctx.msgId     = msgId;
         executions.put(executionId, ctx);
         executionSeenAt.put(executionId, System.currentTimeMillis());
+    }
+
+    // ── pending tool calls ──────────────────────────────────────────────────
+
+    /** A tool an agent asked for, awaiting the run that executes it. */
+    public static class PendingToolCall {
+        public String traceId;
+        public String msgId;
+        public String sessionId;
+        public String nodeName;
+        public String userId;
+        public long   requestedAt;
+    }
+
+    private final Map<String, java.util.Deque<PendingToolCall>> pendingTools = lru(20000);
+
+    /**
+     * Record that an agent asked for a tool, keyed by the tool's name.
+     *
+     * n8n executes a tool as its own LangSmith root run, in its own request,
+     * with no execution id and no parent — so the only link back to the message
+     * is the request the agent made for it.
+     *
+     * Requests are queued rather than overwritten: two chats calling the same
+     * tool at the same time are genuinely ambiguous, and keeping only the most
+     * recent silently hands both executions to the later one.
+     */
+    public void recordToolCall(String toolName, PendingToolCall call) {
+        if (toolName == null || toolName.isEmpty() || call == null) return;
+        call.requestedAt = System.currentTimeMillis();
+        String key = toolName.toLowerCase();
+        synchronized (pendingTools) {
+            java.util.Deque<PendingToolCall> q = pendingTools.get(key);
+            if (q == null) { q = new java.util.ArrayDeque<>(); pendingTools.put(key, q); }
+            // One agent turn re-reports the same action across several runs.
+            boolean seen = false;
+            for (PendingToolCall p : q) {
+                if (p.traceId != null && p.traceId.equals(call.traceId)) { p.requestedAt = call.requestedAt; seen = true; break; }
+            }
+            if (!seen) q.addLast(call);
+            while (q.size() > 32) q.removeFirst();
+        }
+    }
+
+    /**
+     * The request this tool run is executing, or null if that cannot be known.
+     *
+     * Returns a trace only when every live request for the tool points at the
+     * same one. With two chats calling the same tool inside the window there is
+     * no honest way to tell which run belongs to which, and attributing it to
+     * the wrong message is worse than leaving it standalone — a misattributed
+     * tool call is silently wrong, an unattributed one is visibly missing.
+     */
+    public PendingToolCall claimToolCall(String toolName, long windowMillis) {
+        if (toolName == null || toolName.isEmpty()) return null;
+        long cutoff = System.currentTimeMillis() - windowMillis;
+        synchronized (pendingTools) {
+            java.util.Deque<PendingToolCall> q = pendingTools.get(toolName.toLowerCase());
+            if (q == null) return null;
+            q.removeIf(c -> c.requestedAt < cutoff);
+            if (q.isEmpty()) return null;
+
+            PendingToolCall first = q.peekFirst();
+            for (PendingToolCall c : q) {
+                boolean same = c.traceId == null ? first.traceId == null : c.traceId.equals(first.traceId);
+                if (!same) return null;   // ambiguous: two messages want this tool
+            }
+            // Consume it. A request that stays queued after its run has been
+            // matched keeps counting as a rival for the next message's tool
+            // call, so within one busy window every later call looks ambiguous
+            // and nothing is ever attributed.
+            q.removeFirst();
+            if (q.isEmpty()) pendingTools.remove(toolName.toLowerCase());
+            return first;
+        }
+    }
+
+    /**
+     * The one execution active in the recent past, or null if that is ambiguous.
+     *
+     * n8n emits a tool call as its own LangSmith root run carrying no n8n
+     * metadata at all — no execution id, no node, no parent — so nothing links
+     * it to the message it served. Recency is the only signal left, and it is
+     * only trustworthy when a single execution was in flight: with two
+     * concurrent chats, attributing a tool call by time would put it on the
+     * wrong message. Returning null in that case leaves the run where it is
+     * rather than filing it somewhere plausible and wrong.
+     */
+    public ExecutionContext soleRecentExecution(long windowMillis) {
+        long cutoff = System.currentTimeMillis() - windowMillis;
+        String only = null;
+        synchronized (executionSeenAt) {
+            for (Map.Entry<String, Long> e : executionSeenAt.entrySet()) {
+                if (e.getValue() == null || e.getValue() < cutoff) continue;
+                if (only != null) return null;   // more than one candidate
+                only = e.getKey();
+            }
+        }
+        return only == null ? null : executions.get(only);
     }
 
     public int traceCount() { return traces.size(); }

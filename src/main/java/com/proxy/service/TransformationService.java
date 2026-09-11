@@ -27,6 +27,11 @@ public class TransformationService {
     private final LangfuseConfig langfuseConfig;
     private final TraceContextCache traceContextCache;
 
+    /** How recent an execution must be to adopt a context-less run (tool calls). */
+    @org.springframework.beans.factory.annotation.Value("${proxy.orphan-adoption-window-seconds:120}")
+    private long orphanAdoptionWindowSeconds = 120;
+    private long orphanAdoptionWindowMillis() { return orphanAdoptionWindowSeconds * 1000L; }
+
     @Autowired
     public TransformationService(ObjectMapper objectMapper,
                                  LangfuseConfig langfuseConfig,
@@ -129,10 +134,30 @@ public class TransformationService {
             Map<String, String>    nodeDisplay = new LinkedHashMap<>();
 
             for (Map.Entry<String, List<JsonNode>> entry : byTrace.entrySet()) {
-                String         traceId   = entry.getKey();
-                List<JsonNode> traceRuns = entry.getValue();
+                String         langsmithTraceId = entry.getKey();
+                List<JsonNode> traceRuns        = entry.getValue();
 
-                TraceContextCache.TraceContext ctx = buildTraceContext(traceId, traceRuns);
+                TraceContextCache.TraceContext ctx = buildTraceContext(langsmithTraceId, traceRuns);
+
+                // One user message is one trace. Every n8n AI node starts its own
+                // LangSmith trace, so a message that passes through four agents
+                // and a sub-workflow arrives as five unrelated trace ids. Keying
+                // the Langfuse trace on (sessionId, msg_id) instead collapses
+                // them into the single request the user actually made, with each
+                // agent and tool appearing as an observation inside it.
+                String traceId = messageTraceId(ctx, langsmithTraceId);
+                if (!traceId.equals(langsmithTraceId)) {
+                    logger.debug("Message trace: LangSmith {} -> {} (session={}, msg_id={})",
+                                 langsmithTraceId, traceId, ctx.sessionId, ctx.msgId);
+                    // Parent lookups and later PATCHes must both see the id we
+                    // actually wrote, not the one LangSmith invented.
+                    for (JsonNode run : traceRuns) {
+                        String runId = getTextValue(run, "id");
+                        if (runId != null) runTrace.put(runId, traceId);
+                    }
+                    TraceContextCache.TraceContext existing = traceContextCache.getTrace(traceId);
+                    if (existing != null) ctx.inputSet = existing.inputSet;
+                }
                 traceContextCache.putTrace(traceId, ctx);
 
                 String nodeKey = ctx.nodeName != null ? ctx.nodeName : "";
@@ -154,7 +179,7 @@ public class TransformationService {
                 ObjectNode metadata = objectMapper.createObjectNode();
                 metadata.put("batch_size",      batch.size());
                 metadata.put("sdk_integration", "LANGCHAIN");
-                metadata.put("sdk_version",     "proxy-2.0.1");
+                metadata.put("sdk_version",     "proxy-3.0.0");
                 metadata.put("sdk_variant",     "langsmith-proxy");
                 metadata.put("public_key",      project.getPublicKey());
                 metadata.put("sdk_name",        "langsmith-langfuse-proxy");
@@ -359,6 +384,48 @@ public class TransformationService {
         String executionId = n8n.get("execution_id");
         TraceContextCache.ExecutionContext exec = traceContextCache.getExecution(executionId);
 
+        // A run that declares nothing at all is almost always an n8n tool call:
+        // they arrive as their own root run, in their own request, with no
+        // execution id and no parent. Adopt the surrounding message only when
+        // exactly one was in flight, so a tool call is never filed against the
+        // wrong one.
+        boolean anonymous = executionId == null
+                && n8n.get("msg_id") == null && n8n.get("session_id") == null
+                && n8n.get("node_name") == null && n8n.get("node") == null;
+        boolean adopted = false;
+        TraceContextCache.PendingToolCall claimed = null;
+        if (anonymous) {
+            // Prefer the agent's own request for this tool: it names the trace
+            // outright, so concurrent chats cannot pull it onto the wrong one.
+            String toolName = firstRunName(traceRuns);
+            claimed = traceContextCache.claimToolCall(toolName, orphanAdoptionWindowMillis());
+            if (claimed != null) {
+                adopted = true;
+                // Feed it in as an execution context so the identity resolves
+                // through the same chain as everything else; the derived trace
+                // id then lands on the message that asked for the tool.
+                TraceContextCache.ExecutionContext fromTool = new TraceContextCache.ExecutionContext();
+                fromTool.sessionId = claimed.sessionId;
+                fromTool.userId    = claimed.userId;
+                fromTool.nodeName  = claimed.nodeName;
+                fromTool.msgId     = claimed.msgId;
+                exec = fromTool;
+                logger.debug("Tool run '{}' matched a pending request from trace {} (msg_id={})",
+                             toolName, claimed.traceId, claimed.msgId);
+            } else if (exec == null) {
+                // Nothing asked for it by name. Fall back to timing, and only
+                // when a single execution was in flight.
+                exec = traceContextCache.soleRecentExecution(orphanAdoptionWindowMillis());
+                if (exec != null) {
+                    adopted = true;
+                    logger.debug("Trace {} declares no n8n context; adopting the only execution in flight (session={}, msg_id={})",
+                                 traceId, exec.sessionId, exec.msgId);
+                } else {
+                    logger.debug("Trace {} declares no n8n context and could not be attributed; leaving it standalone", traceId);
+                }
+            }
+        }
+
         ctx.nodeName = firstNonNull(n8n.get("node_name"),
                        firstNonNull(cached != null ? cached.nodeName : null,
                                     exec != null ? exec.nodeName : null));
@@ -402,10 +469,53 @@ public class TransformationService {
         // on, and tag it, to keep all the agents of one message correlatable.
         String msgId = metadata.has("msg_id") ? metadata.get("msg_id").asText()
                      : (exec != null ? exec.msgId : null);
+        if (msgId == null && cached != null) msgId = cached.msgId;
+
+        ctx.executionId = executionId;
+
+        // Nothing declared a message id. Derive one from the n8n execution so
+        // the request is still identifiable and every agent of it agrees, and
+        // mark it as ours so it is not mistaken for a client-supplied id.
+        if ((msgId == null || msgId.isEmpty()) && executionId != null && !executionId.isEmpty()) {
+            msgId = "exec-" + executionId;
+            metadata.put("msg_id_source", "derived-from-execution");
+        }
+
         if (msgId != null && !msgId.isEmpty()) {
             metadata.put("msg_id", msgId);
             ctx.tags.add("msg:" + msgId);
+            ctx.msgId = msgId;
         }
+        // A trace with no session sits alone in the UI, so fall back to the
+        // workflow it belongs to: messages of one workflow at least group
+        // together, and a real session_id from the payload still wins.
+        if ((ctx.sessionId == null || ctx.sessionId.isEmpty())) {
+            String wf = metadata.hasNonNull("workflow_id") ? metadata.get("workflow_id").asText()
+                      : (metadata.hasNonNull("workflow_name") ? metadata.get("workflow_name").asText() : null);
+            if (wf != null && !wf.isEmpty()) {
+                ctx.sessionId = "workflow-" + wf;
+                ctx.sessionIdIsReliable = false;
+                metadata.put("session_id_source", "derived-from-workflow");
+            }
+        }
+        if (ctx.sessionId != null && !ctx.sessionId.isEmpty()) metadata.put("session_id", ctx.sessionId);
+
+        if (adopted) {
+            metadata.put("correlation", claimed != null
+                    ? "matched-pending-tool-call" : "adopted-from-sole-active-execution");
+            // It is one step inside the message, not the message: its input is
+            // the tool's argument and its name is the tool's name, so neither
+            // may be written onto the trace.
+            //
+            // Suppressed rather than marked as already-set: a tool call can
+            // reach the trace before the message's own first batch, and
+            // claiming the input was set would block the real question from
+            // ever being written, leaving the trace input permanently empty.
+            ctx.suppressInput = true;
+            ctx.name = null;
+        }
+
+        if (cached != null) ctx.inputSet = cached.inputSet;
         ctx.metadata = metadata;
 
         if (cached != null) ctx.tags.addAll(cached.tags);
@@ -417,6 +527,45 @@ public class TransformationService {
         logger.debug("Trace {} context: node='{}', session='{}', name='{}', tags={}",
                      traceId, ctx.nodeName, ctx.sessionId, ctx.name, ctx.tags);
         return ctx;
+    }
+
+    /**
+     * The Langfuse trace a run belongs to: one per user message where the
+     * workflow declares one, otherwise LangSmith's own trace id.
+     *
+     * Derived rather than taken verbatim because a msg_id is only unique within
+     * its conversation — "MSG-001" recurs in every session. Hashing the pair
+     * keeps it stable across the executions, sub-workflows and retries that make
+     * up one message, without colliding between sessions.
+     */
+    private String messageTraceId(TraceContextCache.TraceContext ctx, String fallback) {
+        String seed;
+        if (ctx.msgId != null && !ctx.msgId.isEmpty()) {
+            // A msg_id is only unique within its conversation — "MSG-001" recurs
+            // in every session — so the pair is what identifies the message.
+            // Without a session it still beats the fallback: one trace per
+            // message rather than one per agent.
+            seed = (ctx.sessionId != null && !ctx.sessionId.isEmpty())
+                    ? ctx.sessionId + "|" + ctx.msgId
+                    : "msg|" + ctx.msgId;
+        } else if (ctx.executionId != null && !ctx.executionId.isEmpty()) {
+            // Nothing was declared at all. One n8n execution is still one user
+            // request, so grouping on it keeps a workflow with no seeding node
+            // to a single trace instead of one per AI node.
+            seed = "exec|" + ctx.executionId;
+        } else {
+            return fallback;
+        }
+        return UUID.nameUUIDFromBytes(seed.getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+    }
+
+    /** The name of the first named run in a group — for a tool run, the tool. */
+    private String firstRunName(List<JsonNode> runs) {
+        for (JsonNode r : runs) {
+            String n = getTextValue(r, "name");
+            if (n != null && !n.isEmpty()) return n;
+        }
+        return null;
     }
 
     private boolean isPatchOnly(JsonNode run) {
@@ -475,8 +624,30 @@ public class TransformationService {
             }
         }
 
-        // Phase 1 — trace-create.
-        batch.add(createTraceCreateEvent(traceId, ctx, extractTraceInput(traceRuns), getCurrentTimestamp()));
+        // Phase 1 — trace-create. The input is the user's message, so it is
+        // written by whichever execution reaches the trace first; a later
+        // agent's input is its own prompt and must not replace it.
+        JsonNode traceInput = null;
+        if (!ctx.inputSet && !ctx.suppressInput) {
+            // Prefer what the workflow declared the user actually asked. Guessing
+            // from the runs picks whichever agent reached the trace first, and on
+            // a classifier-led flow that is its system prompt, not the question.
+            if (ctx.metadata != null && ctx.metadata.hasNonNull("user_input")) {
+                traceInput = ctx.metadata.get("user_input");
+            } else {
+                traceInput = extractTraceInput(traceRuns);
+            }
+            if (traceInput != null && !traceInput.isNull()) ctx.inputSet = true;
+        }
+        batch.add(createTraceCreateEvent(traceId, ctx, traceInput, getCurrentTimestamp()));
+
+        // Remember any tool the agents asked for: the run that executes it will
+        // arrive later, alone and with no n8n context, and this is the only
+        // precise way back to the message.
+        for (JsonNode run : traceRuns) {
+            recordRequestedTools(run, traceId, ctx);
+            recordAgentActions(run, traceId, ctx);
+        }
 
         // Phase 2 — observations.
         for (ObjectNode e : observations) batch.add(e);
@@ -485,6 +656,66 @@ public class TransformationService {
         if (traceOutput != null || (traceOutputRun != null && hasError(traceOutputRun))) {
             batch.add(createTraceCreateFinalEvent(traceId, traceOutput, getCurrentTimestamp(), traceOutputRun));
             logger.debug("trace-create-final for traceId={} (hasOutput={})", traceId, traceOutput != null);
+        }
+    }
+
+    /**
+     * Index the tools a generation asked for, so the runs that execute them can
+     * be attributed back to this message.
+     */
+    private void recordRequestedTools(JsonNode run, String traceId, TraceContextCache.TraceContext ctx) {
+        if (!run.has("outputs") || run.get("outputs").isNull()) return;
+        JsonNode firstGen = firstGeneration(run.get("outputs"));
+        if (firstGen == null || !firstGen.has("message")) return;
+        JsonNode kwargs = firstGen.get("message").get("kwargs");
+        if (kwargs == null) return;
+
+        JsonNode toolCalls = kwargs.get("tool_calls");
+        if (toolCalls == null && kwargs.has("additional_kwargs")) {
+            toolCalls = kwargs.get("additional_kwargs").get("tool_calls");
+        }
+        if (toolCalls == null || !toolCalls.isArray()) return;
+
+        for (JsonNode tc : toolCalls) {
+            String name = tc.hasNonNull("name") ? tc.get("name").asText()
+                        : (tc.has("function") && tc.get("function").hasNonNull("name")
+                           ? tc.get("function").get("name").asText() : null);
+            if (name == null || name.isEmpty()) continue;
+            indexToolCall(name, traceId, ctx);
+        }
+    }
+
+    /**
+     * The agent's own record of what it decided to invoke.
+     *
+     * A tool-calling agent emits the decision as an agent action —
+     * {@code outputs.output[] = [{tool, toolInput, toolCallId}]} — on the
+     * output-parser span, which is where n8n's agents put it. The chat model's
+     * generation for that turn carries no message at all, so the tool_calls
+     * path above never sees it.
+     */
+    private void recordAgentActions(JsonNode run, String traceId, TraceContextCache.TraceContext ctx) {
+        if (!run.has("outputs") || run.get("outputs").isNull()) return;
+        JsonNode out = run.get("outputs").get("output");
+        if (out == null || !out.isArray()) return;
+        for (JsonNode action : out) {
+            if (!action.isObject() || !action.hasNonNull("tool")) continue;
+            indexToolCall(action.get("tool").asText(), traceId, ctx);
+        }
+    }
+
+    private void indexToolCall(String name, String traceId, TraceContextCache.TraceContext ctx) {
+        if (name == null || name.isEmpty()) return;
+        {
+
+            TraceContextCache.PendingToolCall call = new TraceContextCache.PendingToolCall();
+            call.traceId   = traceId;
+            call.msgId     = ctx.msgId;
+            call.sessionId = ctx.sessionId;
+            call.nodeName  = ctx.nodeName;
+            call.userId    = ctx.userId;
+            traceContextCache.recordToolCall(name, call);
+            logger.debug("Agent requested tool '{}' for trace {}", name, traceId);
         }
     }
 
@@ -1290,6 +1521,18 @@ public class TransformationService {
 
         String runType = getTextValue(run, "run_type");
         if (runType != null) metadata.put("run_type", runType);
+
+        // Execution identity is per agent/node, not per message: it is what you
+        // follow to debug or replay one step, while msg_id ties the steps
+        // together. Mirrored onto the observation so both are visible there.
+        if (run.has("extra") && run.get("extra").has("metadata")) {
+            JsonNode m = run.get("extra").get("metadata");
+            if (m.has("execution_id") && !metadata.has("node_execution_id")) {
+                String node = m.has("node") ? m.get("node").asText() : getTextValue(run, "name");
+                metadata.put("node_execution_id",
+                             (node != null ? node : "node") + "#" + m.get("execution_id").asText());
+            }
+        }
 
         if (run.has("tags") && run.get("tags").isArray() && run.get("tags").size() > 0) {
             metadata.set("tags", run.get("tags"));

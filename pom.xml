@@ -7,7 +7,7 @@
 
     <groupId>com.proxy</groupId>
     <artifactId>langsmith-langfuse-proxy</artifactId>
-    <version>2.0.1</version>
+    <version>3.0.0</version>
     <packaging>jar</packaging>
 
     <name>LangSmith to Langfuse Proxy</name>

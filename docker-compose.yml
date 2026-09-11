@@ -8,9 +8,9 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: langsmith-langfuse-proxy
-    image: subinksoman/langsmith-langfuse-proxy:2.0.1
-    # The image is not published yet, so prefer the local build over a registry
-    # pull that would fail. Drop this once it is on Docker Hub.
+    image: subinksoman/langsmith-langfuse-proxy:3.0.0
+    # Prefer a locally built image over a registry pull, so `--build` during
+    # development is not silently overridden by the published tag.
     pull_policy: missing
     # No ports published - n8n reaches this via service name "langsmith-proxy" on langfuse-net
     environment:

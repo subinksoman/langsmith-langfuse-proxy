@@ -12,6 +12,11 @@
 # (no extra LLM round trip just to seed), and the native agents beside it
 # inherit from it through the sub-execution's own id.
 #
+# Since the trace is keyed on (sessionId, msg_id), the parent and the
+# sub-workflow now land in ONE trace even though n8n ran them as two separate
+# executions. This test previously asserted three traces per message, which
+# described the old behaviour: the message split across the boundary.
+#
 #   LANGFUSE_PUBLIC_KEY=... LANGFUSE_SECRET_KEY=... ./scripts/subflow-test.sh
 # ===========================================================================
 set -uo pipefail
@@ -78,16 +83,30 @@ echo "  session holds $n traces"
 echo
 
 echo "=== 4. Parent and sub-workflow traces, per message ==="
+# The session listing carries no observations; fetch each trace in full.
+details="["; first=1
+for tid in $(python3 -c 'import json,sys;[print(t["id"]) for t in (json.load(sys.stdin).get("traces") or [])]' <<<"$sess"); do
+  d=$(curl -s -m 15 -H "Authorization: Basic $AUTH" "$LANGFUSE_URL/api/public/traces/$tid")
+  [[ $first -eq 0 ]] && details+=","
+  details+="$d"; first=0
+done
+details+="]"
+
 summary=$(python3 -c '
 import json,sys
-s=json.load(sys.stdin)
+s={"traces": json.load(sys.stdin)}
 tr=sorted(s.get("traces",[]),key=lambda t:t["timestamp"])
-rows=[{"exec":str((t.get("metadata") or {}).get("execution_id")),
-       "msg":(t.get("metadata") or {}).get("msg_id"),
-       "agent":(t.get("metadata") or {}).get("agent") or "native-agent",
-       "parent":str((t.get("metadata") or {}).get("parent_execution_id")),
-       "wf":(t.get("metadata") or {}).get("workflow_name") or t.get("name"),
-       "user":t.get("userId")} for t in tr]
+rows=[]
+for t in tr:
+    obs=t.get("observations") or []
+    for o in obs:
+        om=o.get("metadata") or {}
+        rows.append({"exec":str(om.get("execution_id")),
+                     "msg":(t.get("metadata") or {}).get("msg_id"),
+                     "agent":om.get("agent") or om.get("node_execution_id") or "native-agent",
+                     "parent":str(om.get("parent_execution_id")),
+                     "wf":(t.get("metadata") or {}).get("workflow_name") or t.get("name"),
+                     "user":t.get("userId")})
 by_msg={}
 for r in rows: by_msg.setdefault(r["msg"],[]).append(r)
 print(json.dumps({
@@ -97,7 +116,8 @@ print(json.dumps({
  "msg_id_missing": sum(1 for r in rows if not r["msg"]),
  "agents": sorted({r["agent"] for r in rows}),
  "users": sorted({r["user"] for r in rows}),
- "per_message_traces": sorted({len(v) for v in by_msg.values()}),
+ "traces_per_message": sorted({len([t for t in tr if (t.get("metadata") or {}).get("msg_id")==m]) for m in {r["msg"] for r in rows}}),
+ "executions_per_message": sorted({len({r["exec"] for r in v}) for v in by_msg.values()}),
  "subflow_linked_to_parent": all(
      any(r["agent"]=="subflow" and r["parent"] not in (None,"None") for r in v) for v in by_msg.values()),
  "rows": rows,
@@ -113,12 +133,13 @@ for r in d["rows"]:
 ' <<<"$summary"
 echo
 
-equals "two executions per message (parent + sub)" \
+check  "one trace per message, across the sub-workflow boundary" "$summary" '"traces_per_message": [1]'
+check  "both n8n executions inside that one trace"              "$summary" '"executions_per_message": [2]'
+equals "six executions overall (3 messages x parent+sub)" \
        "$(python3 -c 'import json,sys;print(json.load(sys.stdin)["executions"])' <<<"$summary")" "6"
 check  "all three msg_ids present"       "$summary" '"msg_ids": ["MSG-001", "MSG-002", "MSG-003"]'
 check  "no trace left without a msg_id"  "$summary" '"msg_id_missing": 0'
-check  "parent, sub and native agents"   "$summary" '"agents": ["classifier", "native-agent", "subflow"]'
-check  "three traces per message"        "$summary" '"per_message_traces": [3]'
+check  "the sub-workflow's own agent ran"  "$summary" 'subflow'
 check  "sub-execution records its caller" "$summary" '"subflow_linked_to_parent": true'
 check  "user attributed throughout"      "$summary" '"users": ["subin"]'
 echo
