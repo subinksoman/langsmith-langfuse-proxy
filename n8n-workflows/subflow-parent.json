@@ -1,0 +1,146 @@
+{
+  "id": "subflowParent",
+  "name": "Subflow Parent",
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "subflow",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "p1000000-0000-4000-8000-000000000001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -800,
+        0
+      ],
+      "webhookId": "subflow-webhook-0001"
+    },
+    {
+      "parameters": {
+        "code": {
+          "execute": {
+            "code": "// Seeds the request identity for this execution, exactly as the multi-agent\n// flow's classifier does, then hands the payload to the sub-workflow.\nconst { ChatPromptTemplate } = require('@langchain/core/prompts');\nconst { StringOutputParser } = require('@langchain/core/output_parsers');\n\nconst item = $input.first().json;\nconst body = item.body || item;\nconst userId = body.user_id || 'sixdee';\nconst chatInput = body.chatInput || (body.message && body.message.payload) || '';\n\nconst llm = await this.getInputConnectionData('ai_languageModel', 0);\nconst prompt = ChatPromptTemplate.fromMessages([\n  ['system', 'Classify the user request as exactly one word: weather, billing or general.'],\n  ['human', '{question}'],\n]);\n\nconst chain = prompt.pipe(llm).pipe(new StringOutputParser()).withConfig({\n  runName: `classify ${body.msg_id}`,\n  tags: ['node:crm', `msg:${body.msg_id}`, 'agent:classifier'],\n  metadata: {\n    node: 'crm', session_id: body.sessionId, msg_id: body.msg_id, user_id: userId,\n    workflow_name: 'Subflow Parent', agent: 'classifier',\n    execution_id: String($execution.id),\n  },\n});\n\nconst raw = await chain.invoke({ question: chatInput });\nconst lower = String(raw).toLowerCase();\nconst intent = ['weather','billing'].find(i => lower.includes(i)) || 'general';\n\n// parent_execution_id travels with the data, since n8n gives the\n// sub-workflow no link back to the parent execution.\nreturn [{ json: Object.assign({}, body, {\n  user_id: userId, chatInput, intent,\n  parent_execution_id: String($execution.id),\n}) }];\n"
+          }
+        },
+        "inputs": {
+          "input": [
+            {
+              "type": "main",
+              "required": true,
+              "maxConnections": 1
+            },
+            {
+              "type": "ai_languageModel",
+              "required": true,
+              "maxConnections": 1
+            }
+          ]
+        },
+        "outputs": {
+          "output": [
+            {
+              "type": "main"
+            }
+          ]
+        }
+      },
+      "id": "p1000000-0000-4000-8000-000000000002",
+      "name": "Intent Classifier",
+      "type": "@n8n/n8n-nodes-langchain.code",
+      "typeVersion": 1,
+      "position": [
+        -580,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "supportSubagent",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {}
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "p1000000-0000-4000-8000-000000000003",
+      "name": "Call Sub-workflow",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -340,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-4o-mini",
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "id": "p1000000-0000-4000-8000-000000000004",
+      "name": "OpenRouter Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        -640,
+        220
+      ],
+      "credentials": {
+        "openRouterApi": {
+          "id": "openRouterCred",
+          "name": "OpenRouter"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Intent Classifier",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intent Classifier": {
+      "main": [
+        [
+          {
+            "node": "Call Sub-workflow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Intent Classifier",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

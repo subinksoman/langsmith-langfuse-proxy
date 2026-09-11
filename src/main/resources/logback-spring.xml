@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <!--
+      Sizes are overridable from application.properties (or the matching
+      LOGGING_FILE_* environment variables), so a noisy deployment can be
+      retuned without rebuilding the image.
+    -->
+    <springProperty scope="context" name="LOG_PATH"        source="logging.file.path"           defaultValue="logs"/>
+    <springProperty scope="context" name="LOG_MAX_SIZE"    source="logging.file.max-size"       defaultValue="10MB"/>
+    <springProperty scope="context" name="LOG_TOTAL_CAP"   source="logging.file.total-size-cap" defaultValue="500MB"/>
+    <springProperty scope="context" name="LOG_MAX_HISTORY" source="logging.file.max-history"    defaultValue="30"/>
+
+    <property name="LOG_PATTERN" value="%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"/>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_PATH}/proxy.log</file>
+
+        <!--
+          Size AND time based: the previous policy rolled only at midnight with
+          no size limit, so a single day of request/response payload logging
+          could grow the file without bound. %i is the index within the day.
+        -->
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_PATH}/proxy.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>${LOG_MAX_SIZE}</maxFileSize>
+            <maxHistory>${LOG_MAX_HISTORY}</maxHistory>
+            <!-- Bounds the archive as a whole; maxHistory alone does not. -->
+            <totalSizeCap>${LOG_TOTAL_CAP}</totalSizeCap>
+            <cleanHistoryOnStart>true</cleanHistoryOnStart>
+        </rollingPolicy>
+
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Application logging -->
+    <logger name="com.proxy" level="DEBUG"/>
+
+    <!-- Spring logging -->
+    <logger name="org.springframework" level="INFO"/>
+    <logger name="org.springframework.web" level="INFO"/>
+
+    <!-- HTTP Client logging -->
+    <logger name="org.apache.hc" level="WARN"/>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="FILE"/>
+    </root>
+</configuration>

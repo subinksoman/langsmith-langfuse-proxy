@@ -1,0 +1,55 @@
+{
+  "id": "weatherRoutedTest",
+  "name": "Weather Agent (routed to weather project)",
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "44444444-4444-4444-8444-444444444444",
+      "name": "When clicking Execute",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [-120, 0]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "What is the weather in Kochi today?",
+        "messages": {
+          "messageValues": [
+            { "message": "You are a concise weather assistant. Answer in one sentence." }
+          ]
+        },
+        "batching": {}
+      },
+      "id": "55555555-5555-4555-8555-555555555555",
+      "name": "weather",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.7,
+      "position": [120, 0]
+    },
+    {
+      "parameters": {
+        "model": { "__rl": true, "mode": "list", "value": "gpt-4o-mini" },
+        "options": { "temperature": 0.7, "maxTokens": 256 }
+      },
+      "id": "66666666-6666-4666-8666-666666666666",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [80, 200],
+      "credentials": {
+        "openAiApi": { "id": "mockOpenAiCred", "name": "Mock OpenAI" }
+      }
+    }
+  ],
+  "connections": {
+    "When clicking Execute": {
+      "main": [[{ "node": "weather", "type": "main", "index": 0 }]]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [[{ "node": "weather", "type": "ai_languageModel", "index": 0 }]]
+    }
+  }
+}

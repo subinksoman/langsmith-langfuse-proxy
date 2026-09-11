@@ -1,0 +1,16 @@
+[
+  {
+    "operation": "shift",
+    "spec": {
+      "trace_id": "body.id",
+      "end_time": ["body.timestamp", "timestamp"],
+      "output": "body.output"
+    }
+  },
+  {
+    "operation": "default",
+    "spec": {
+      "type": "trace-create"
+    }
+  }
+]

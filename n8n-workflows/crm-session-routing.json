@@ -1,0 +1,156 @@
+{
+  "id": "crmRoutedTest",
+  "name": "CRM Weather Agent (session + routing)",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "77777777-7777-4777-8777-777777777777",
+      "name": "When clicking Execute",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -320,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "question",
+              "value": "What is the weather in Kochi today?",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "session_id",
+              "value": "chat-session-kochi-42",
+              "type": "string"
+            },
+            {
+              "id": "a3",
+              "name": "user_id",
+              "value": "subin",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "88888888-8888-4888-8888-888888888888",
+      "name": "Chat context",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -100,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "code": {
+          "execute": {
+            "code": "// Attach the n8n context LangSmith does not send on its own.\n//\n// The proxy routes to a Langfuse project on metadata.node (or a \"node:<name>\"\n// tag) and groups traces into a Session on metadata.session_id. Neither is\n// something n8n injects, so a workflow that wants per-project routing, a real\n// chat session or a user attribution has to set them here, on the run config.\n\nconst { ChatPromptTemplate } = require('@langchain/core/prompts');\nconst { StringOutputParser } = require('@langchain/core/output_parsers');\n\nconst item = $input.first().json;\n\nconst question  = item.question   || 'What is the weather in Kochi today?';\nconst sessionId = item.session_id || 'chat-session-001';\nconst userId    = item.user_id    || 'subin';\n\nconst llm = await this.getInputConnectionData('ai_languageModel', 0);\n\nconst prompt = ChatPromptTemplate.fromMessages([\n  ['system', 'You are a concise weather assistant. Answer in one sentence.'],\n  ['human', '{question}'],\n]);\n\nconst chain = prompt.pipe(llm).pipe(new StringOutputParser()).withConfig({\n  runName: 'CRM Weather Chain',\n  tags: ['node:crm'],\n  metadata: {\n    node: 'crm',\n    session_id: sessionId,\n    user_id: userId,\n    workflow_name: 'CRM Weather Agent',\n  },\n});\n\nconst output = await chain.invoke({ question });\n\nreturn [{ json: { output, session_id: sessionId, user_id: userId } }];\n"
+          }
+        },
+        "inputs": {
+          "input": [
+            {
+              "type": "main",
+              "required": true,
+              "maxConnections": 1
+            },
+            {
+              "type": "ai_languageModel",
+              "required": true,
+              "maxConnections": 1
+            }
+          ]
+        },
+        "outputs": {
+          "output": [
+            {
+              "type": "main"
+            }
+          ]
+        }
+      },
+      "id": "99999999-9999-4999-8999-999999999999",
+      "name": "crm",
+      "type": "@n8n/n8n-nodes-langchain.code",
+      "typeVersion": 1,
+      "position": [
+        140,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4o-mini"
+        },
+        "options": {
+          "temperature": 0.3,
+          "maxTokens": 256
+        }
+      },
+      "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        100,
+        200
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "mockOpenAiCred",
+          "name": "Mock OpenAI"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "When clicking Execute": {
+      "main": [
+        [
+          {
+            "node": "Chat context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chat context": {
+      "main": [
+        [
+          {
+            "node": "crm",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "crm",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

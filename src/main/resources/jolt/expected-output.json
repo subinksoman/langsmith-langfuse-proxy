@@ -1,0 +1,196 @@
+{
+  "batch": [
+    {
+      "id": "event-uuid-1",
+      "type": "trace-create",
+      "timestamp": "2025-12-11T13:54:59.223Z",
+      "body": {
+        "id": "91c06284-f280-47b6-9343-0478a641a872",
+        "timestamp": "2025-12-11T13:54:59.223Z",
+        "name": "ChatGroq",
+        "sessionId": "default",
+        "metadata": {
+          "ls_provider": "groq",
+          "ls_model_name": "llama-3.3-70b-versatile",
+          "ls_model_type": "chat"
+        },
+        "input": [
+          {
+            "content": "hi tell a story in 10 words",
+            "role": "user"
+          }
+        ]
+      }
+    },
+    {
+      "id": "event-uuid-2",
+      "type": "generation-create",
+      "timestamp": "2025-12-11T13:54:59.223Z",
+      "body": {
+        "id": "46d17fa7-15f6-4fdb-b018-7266b95c433f",
+        "traceId": "91c06284-f280-47b6-9343-0478a641a872",
+        "name": "ChatGroq",
+        "startTime": "2025-12-11T13:54:59.223006Z",
+        "metadata": {
+          "ls_provider": "groq",
+          "ls_model_name": "llama-3.3-70b-versatile",
+          "ls_model_type": "chat"
+        },
+        "input": [
+          {
+            "content": "hi tell a story in 10 words",
+            "role": "user"
+          }
+        ],
+        "model": "llama-3.3-70b-versatile",
+        "modelParameters": {}
+      }
+    },
+    {
+      "id": "event-uuid-3",
+      "type": "generation-update",
+      "timestamp": "2025-12-11T13:54:59.461Z",
+      "body": {
+        "id": "46d17fa7-15f6-4fdb-b018-7266b95c433f",
+        "traceId": "91c06284-f280-47b6-9343-0478a641a872",
+        "model": "llama-3.3-70b-versatile",
+        "output": {
+          "content": "The beautiful princess found her true love suddenly yesterday.",
+          "role": "assistant"
+        },
+        "endTime": "2025-12-11T13:54:59.461000Z",
+        "usage": {
+          "input": 43,
+          "output": 11,
+          "total": 54
+        },
+        "usageDetails": {
+          "input": 43,
+          "output": 11,
+          "total": 54
+        }
+      }
+    },
+    {
+      "id": "event-uuid-4",
+      "type": "trace-create",
+      "timestamp": "2025-12-11T13:54:59.461Z",
+      "body": {
+        "id": "91c06284-f280-47b6-9343-0478a641a872",
+        "timestamp": "2025-12-11T13:54:59.461Z",
+        "output": {
+          "content": "The beautiful princess found her true love suddenly yesterday.",
+          "role": "assistant"
+        }
+      }
+    },
+    {
+      "id": "event-uuid-5",
+      "type": "trace-create",
+      "timestamp": "2025-12-11T13:54:59.483Z",
+      "body": {
+        "id": "3e751da7-37f0-449b-ad91-9aeea96a228b",
+        "timestamp": "2025-12-11T13:54:59.483Z",
+        "name": "ChatGroq",
+        "sessionId": "default",
+        "metadata": {
+          "ls_provider": "groq",
+          "ls_model_name": "allam-2-7b",
+          "ls_model_type": "chat"
+        },
+        "input": [
+          {
+            "content": "hi tell a story in 10 words",
+            "role": "user"
+          },
+          {
+            "content": "The beautiful princess found her true love suddenly yesterday.",
+            "role": "assistant"
+          },
+          {
+            "content": "continue the story",
+            "role": "user"
+          }
+        ]
+      }
+    },
+    {
+      "id": "event-uuid-6",
+      "type": "generation-create",
+      "timestamp": "2025-12-11T13:54:59.483Z",
+      "body": {
+        "id": "8305c5d5-52a3-4fe2-9ebe-bcd410c4ca9a",
+        "traceId": "3e751da7-37f0-449b-ad91-9aeea96a228b",
+        "name": "ChatGroq",
+        "startTime": "2025-12-11T13:54:59.483005Z",
+        "metadata": {
+          "ls_provider": "groq",
+          "ls_model_name": "allam-2-7b",
+          "ls_model_type": "chat"
+        },
+        "input": [
+          {
+            "content": "hi tell a story in 10 words",
+            "role": "user"
+          },
+          {
+            "content": "The beautiful princess found her true love suddenly yesterday.",
+            "role": "assistant"
+          },
+          {
+            "content": "continue the story",
+            "role": "user"
+          }
+        ],
+        "model": "allam-2-7b",
+        "modelParameters": {}
+      }
+    },
+    {
+      "id": "event-uuid-7",
+      "type": "generation-update",
+      "timestamp": "2025-12-11T13:54:59.804Z",
+      "body": {
+        "id": "8305c5d5-52a3-4fe2-9ebe-bcd410c4ca9a",
+        "traceId": "3e751da7-37f0-449b-ad91-9aeea96a228b",
+        "model": "allam-2-7b",
+        "output": {
+          "content": "Once upon a time, a princess met her love unexpectedly.",
+          "role": "assistant"
+        },
+        "endTime": "2025-12-11T13:54:59.804000Z",
+        "usage": {
+          "input": 55,
+          "output": 28,
+          "total": 83
+        },
+        "usageDetails": {
+          "input": 55,
+          "output": 28,
+          "total": 83
+        }
+      }
+    },
+    {
+      "id": "event-uuid-8",
+      "type": "trace-create",
+      "timestamp": "2025-12-11T13:54:59.804Z",
+      "body": {
+        "id": "3e751da7-37f0-449b-ad91-9aeea96a228b",
+        "timestamp": "2025-12-11T13:54:59.804Z",
+        "output": {
+          "content": "Once upon a time, a princess met her love unexpectedly.",
+          "role": "assistant"
+        }
+      }
+    }
+  ],
+  "metadata": {
+    "batch_size": 8,
+    "sdk_integration": "LANGCHAIN",
+    "sdk_version": "proxy-1.0.0",
+    "sdk_variant": "langsmith-proxy",
+    "public_key": "pk-lf-your-public-key",
+    "sdk_name": "langsmith-langfuse-proxy"
+  }
+}

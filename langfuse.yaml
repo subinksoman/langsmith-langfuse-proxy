@@ -1,0 +1,366 @@
+# ===========================================================================
+# Langfuse v3 - UAT
+#
+# Self-contained. No .env file, no variables. Every path is ABSOLUTE, so this
+# behaves identically no matter which directory you run it from.
+#
+#   docker compose up -d
+#   docker compose ps
+#
+# Restart safety:
+#   - absolute bind mounts        -> a restart from any cwd finds the same data
+#   - name: below                 -> fixed project name, no cwd-derived collisions
+#   - depends_on + healthchecks   -> web waits for postgres/clickhouse on reboot
+#   - network owned by this stack -> a pruned network cannot block startup
+#   - pinned image tags           -> a restart cannot silently upgrade you
+#   - one uid (1000) everywhere   -> `chown -R 1000:1000 <root>` fixes any mess
+#
+# Published on 3100 (prod uses 3000) so both can run on one host.
+# ===========================================================================
+
+name: langfuse_uat
+
+networks:
+  langfuse-net:
+    name: langfuse-net-uat
+
+services:
+
+  # ---------------------------------------------------------- init-perms
+  # Runs as root, fixes directory ownership, then exits. Everything else
+  # waits for it via service_completed_successfully.
+  #
+  # WHY this is needed: Docker creates a missing bind-mount directory as
+  # root:root, but every image here runs as non-root. A root-owned directory
+  # is exactly what produces
+  #   FATAL: could not open file "global/pg_filenode.map": Permission denied
+  # The compose spec has no way to express ownership, so this does it.
+  # Idempotent and fast: it only recurses when the owner is actually wrong.
+  init-perms:
+    # Deliberately postgres:17 - an image this stack ALREADY pulls, so
+    # init-perms adds no new image, no extra registry dependency and nothing
+    # new to trust or rate-limit. It is used purely as a shell: it provides
+    # sh/mkdir/stat/chown/chmod/find, and its GNU findutils supports the
+    # -maxdepth/-user/-quit used below. It never runs a database here.
+    image: postgres:17
+    entrypoint: ["/bin/sh"]
+    user: "0:0"
+    restart: "no"
+    network_mode: none
+    volumes:
+      - /opt/app-user/langfuse_data/uat:/mnt
+    command:
+      - -ec
+      - |
+        fix() {  # fix <uid:gid> <dir>
+          mkdir -p "$$2"
+          # Fast path: check the directory itself. O(1), so boot time does not
+          # grow with the size of the data.
+          if [ "$$(stat -c %u:%g "$$2")" != "$$1" ]; then
+            echo "chown $$1 $$2"; chown -R "$$1" "$$2"; return
+          fi
+          # Shallow probe. The check above CANNOT see files restored as root
+          # INTO an already-correctly-owned directory - i.e. exactly what a
+          # `sudo cp -r` restore produces, and exactly the failure that caused
+          # "global/pg_filenode.map: Permission denied". Depth is capped so
+          # this stays cheap on a large store; a uniformly-wrong restore is
+          # caught at the top levels. It is NOT a full audit - if you restore
+          # data by hand, run `chown -R 1000:1000 <data root>` yourself.
+          if [ -n "$$(find "$$2" -maxdepth 3 ! -user "$${1%%:*}" -print -quit 2>/dev/null)" ]; then
+            echo "chown $$1 $$2 (deep mismatch)"; chown -R "$$1" "$$2"
+          fi
+        }
+        # Must be the EXACT bind-mount sources. Creating only the parent is
+        # not enough: Docker auto-creates a missing mount source as root:root
+        # when the container starts - i.e. AFTER this service has run - and
+        # the non-root image user then cannot write to it.
+        #
+        # ONE uid for everything (see user: "1000:1000" on each service).
+        # Natively these images use four different uids: postgres/redis 999,
+        # clickhouse 101, minio 65532 (nonroot). Bind mounts pass raw NUMBERS
+        # to the kernel, so those mismatches are what cause "Permission
+        # denied" after a restore. With a single uid, one command fixes any
+        # future mess:  sudo chown -R 1000:1000 <data root>
+        fix 1000:1000 /mnt/postgres
+        fix 1000:1000 /mnt/clickhouse/data
+        fix 1000:1000 /mnt/clickhouse/logs
+        fix 1000:1000 /mnt/clickhouse/config.d
+        fix 1000:1000 /mnt/clickhouse/users.d
+        fix 1000:1000 /mnt/minio
+        fix 1000:1000 /mnt/redis
+        chmod 700 /mnt/postgres   # postgres refuses a group/world-readable PGDATA
+
+        # ClickHouse memory caps. Written here so this compose file is the
+        # single source of truth - no sidecar config files to keep in sync.
+        cat > /mnt/clickhouse/config.d/memory.xml <<'XML'
+        <clickhouse>
+            <!-- Size against the container cgroup, not total host RAM. -->
+            <cgroups_memory_usage_observer_wait_time>15</cgroups_memory_usage_observer_wait_time>
+            <max_server_memory_usage_to_ram_ratio>0.75</max_server_memory_usage_to_ram_ratio>
+            <!-- Defaults (5G marks / 8G uncompressed) assume a dedicated box. -->
+            <mark_cache_size>536870912</mark_cache_size>
+            <uncompressed_cache_size>0</uncompressed_cache_size>
+            <index_mark_cache_size>134217728</index_mark_cache_size>
+            <mmap_cache_size>256</mmap_cache_size>
+            <!-- Merges otherwise fight the query path for RAM. -->
+            <background_pool_size>8</background_pool_size>
+            <background_merges_mutations_concurrency_ratio>2</background_merges_mutations_concurrency_ratio>
+            <background_schedule_pool_size>8</background_schedule_pool_size>
+            <background_common_pool_size>4</background_common_pool_size>
+            <max_concurrent_queries>50</max_concurrent_queries>
+            <merge_tree>
+                <!-- These MUST be <= background_pool_size x concurrency_ratio
+                     (8 x 2 = 16) or ClickHouse refuses to start with
+                     BAD_ARGUMENTS. The defaults (20 / 8) assume the default
+                     pool of 16 threads, which we shrank to save memory. -->
+                <number_of_free_entries_in_pool_to_execute_mutation>8</number_of_free_entries_in_pool_to_execute_mutation>
+                <number_of_free_entries_in_pool_to_lower_max_size_of_merge>4</number_of_free_entries_in_pool_to_lower_max_size_of_merge>
+                <number_of_free_entries_in_pool_to_execute_optimize_entire_partition>4</number_of_free_entries_in_pool_to_execute_optimize_entire_partition>
+                <!-- Cap single-merge size so one huge merge cannot dominate. -->
+                <max_bytes_to_merge_at_max_space_in_pool>10737418240</max_bytes_to_merge_at_max_space_in_pool>
+            </merge_tree>
+            <logger><level>warning</level><size>100M</size><count>3</count></logger>
+            <!-- ClickHouse's own system tables are a classic disk runaway. -->
+            <query_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></query_log>
+            <trace_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></trace_log>
+            <metric_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></metric_log>
+            <part_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></part_log>
+            <asynchronous_metric_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></asynchronous_metric_log>
+        </clickhouse>
+        XML
+        cat > /mnt/clickhouse/users.d/memory.xml <<'XML'
+        <clickhouse>
+            <profiles><default>
+                <!-- Per-query ceiling: one bad dashboard query must not take
+                     down the whole server. -->
+                <max_memory_usage>1000000000</max_memory_usage>
+                <max_memory_usage_for_user>1500000000</max_memory_usage_for_user>
+                <!-- Spill to disk instead of dying. The single most valuable
+                     setting here: MEMORY_LIMIT_EXCEEDED becomes a slow query. -->
+                <max_bytes_before_external_group_by>500000000</max_bytes_before_external_group_by>
+                <max_bytes_before_external_sort>500000000</max_bytes_before_external_sort>
+                <join_algorithm>grace_hash,partial_merge,hash</join_algorithm>
+                <max_bytes_in_join>500000000</max_bytes_in_join>
+                <max_execution_time>300</max_execution_time>
+                <max_threads>4</max_threads>
+            </default></profiles>
+        </clickhouse>
+        XML
+        echo "init-perms: ok"
+
+  # ------------------------------------------------------------- postgres
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    user: "1000:1000"
+    mem_limit: 1g
+    shm_size: 512m
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: langfuse_postgres
+      POSTGRES_DB: langfuse
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - /opt/app-user/langfuse_data/uat/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d langfuse"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    depends_on:
+      init-perms: { condition: service_completed_successfully }
+    networks: [langfuse-net]
+
+  # ----------------------------------------------------------- clickhouse
+  clickhouse:
+    # Pinned. 'latest' lets a restart upgrade you, and ClickHouse cannot be
+    # downgraded - check yours with: clickhouse-client -q "select version()"
+    image: clickhouse/clickhouse-server:24.12
+    restart: unless-stopped
+    user: "1000:1000"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: NewClickhouseSecret789
+    # MEMORY: ClickHouse sizes itself against what it thinks is available.
+    # Left unbounded in a container it plans against TOTAL HOST RAM and gets
+    # OOM-killed. mem_limit gives it a cgroup to read; config.d/memory.xml
+    # tells it to respect that cgroup. Both are required - neither alone works.
+    mem_limit: 3g
+    mem_reservation: 1g
+    memswap_limit: 3g          # equal to mem_limit => no swap thrashing
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    volumes:
+      - /opt/app-user/langfuse_data/uat/clickhouse/data:/var/lib/clickhouse
+      - /opt/app-user/langfuse_data/uat/clickhouse/logs:/var/log/clickhouse-server
+      # Single FILES, not directories. Mounting the whole config.d dir
+      # hides the image's own docker_related_config.xml, which is what
+      # sets <listen_host>0.0.0.0</listen_host>. Without it ClickHouse
+      # listens on localhost only: the 8123 healthcheck still passes
+      # (it runs inside the container) but port 9000 refuses every
+      # other container, and Langfuse's CH migrations fail.
+      - /opt/app-user/langfuse_data/uat/clickhouse/config.d/memory.xml:/etc/clickhouse-server/config.d/memory.xml:ro
+      - /opt/app-user/langfuse_data/uat/clickhouse/users.d/memory.xml:/etc/clickhouse-server/users.d/memory.xml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    depends_on:
+      init-perms: { condition: service_completed_successfully }
+    networks: [langfuse-net]
+
+  # ---------------------------------------------------------------- minio
+  minio:
+    # Pinned by DIGEST, not tag: chainguard/minio publishes ONLY :latest (no
+    # version tags), and it is rebuilt constantly - so an untagged image means
+    # a restart can silently change your MinIO version.
+    #   This digest = minio RELEASE.2026-07-17T12-07-51Z
+    #   Capture the one you are ACTUALLY running on EC2 before deploying:
+    #     docker inspect <minio-container> --format '{{.Image}}'
+    #     docker image inspect chainguard/minio --format '{{index .RepoDigests 0}}'
+    # CAVEAT: Chainguard's free tier does not retain old digests indefinitely.
+    # If this ever fails to pull, mirror it to your own registry (e.g. ECR).
+    image: chainguard/minio
+    restart: unless-stopped
+    user: "1000:1000"
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: miniosecret
+      # uid 1000 has no /etc/passwd entry in this image, so HOME defaults to
+      # "/" and the `mc` healthcheck fails: mkdir /.mc: permission denied
+      HOME: /tmp
+    volumes:
+      - /opt/app-user/langfuse_data/uat/minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    depends_on:
+      init-perms: { condition: service_completed_successfully }
+    networks: [langfuse-net]
+
+  # ---------------------------------------------------------------- redis
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    user: "1000:1000"
+    # maxmemory is ~50% of mem_limit ON PURPOSE: the AOF rewrite forks, and
+    # copy-on-write can briefly push RSS well above the dataset size. Sizing
+    # them close together gets the container OOM-killed mid-rewrite.
+    mem_limit: 512m
+    # WARNING: with noeviction (which Langfuse requires - the ingestion queue
+    # must never be evicted) maxmemory is a HARD INGESTION STOP, not a soft
+    # cap. Once the queue reaches it Redis returns OOM on writes and
+    # langfuse-web fails to enqueue traces. Size for PEAK queue depth (how far
+    # the worker can fall behind), not average. Watch it with:
+    #   redis-cli -p 6378 -a <pw> info memory | grep used_memory_human
+    command: >
+      --port 6378
+      --requirepass myredissecret
+      --maxmemory 256mb
+      --maxmemory-policy noeviction
+      --dir /data
+      --appendonly yes
+      --appendfsync everysec
+    volumes:
+      # Langfuse queues ingestion jobs here before the worker drains them into
+      # ClickHouse. With no volume (the old config) every in-flight trace died
+      # on each container recreate.
+      - /opt/app-user/langfuse_data/uat/redis:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 6378 -a myredissecret ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    depends_on:
+      init-perms: { condition: service_completed_successfully }
+    networks: [langfuse-net]
+
+  # ------------------------------------------------------------- worker
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    restart: unless-stopped
+    mem_limit: 2g
+    environment: &langfuse_env
+      # Node derives its default heap from the cgroup (~50% of mem_limit),
+      # which Langfuse overruns on boot: "JavaScript heap out of memory".
+      # Set it explicitly to ~75% of mem_limit instead.
+      NODE_OPTIONS: --max-old-space-size=1536
+      # REQUIRED - Langfuse validates env on boot and refuses to start if this
+      # is missing ("Invalid environment variables"). It is also the canonical
+      # origin NextAuth builds absolute redirects from, so it MUST match the
+      # URL users actually reach the app on.
+      #   >>> CHANGE THIS BEFORE DEPLOYING TO EC2 <<<
+      #   EC2 value: https://pred-ai-uat-playwright.aws.otg.om:8445
+      NEXTAUTH_URL: https://pred-ai-uat-playwright.aws.otg.om:8445
+      DATABASE_URL: postgresql://postgres:langfuse_postgres@postgres:5432/langfuse
+
+      # !! Do NOT change SALT or ENCRYPTION_KEY on an existing database.
+      # !! Langfuse encrypts stored LLM keys with them; changing either makes
+      # !! that data permanently undecryptable.
+      SALT: heLuij90cI9/egF7UvpVSuYgj4dpENwvPWvGeMqNiVk=
+      ENCRYPTION_KEY: df0f78e3fcdde8b3693f3f0528d592c772aa4aaacd7ed6c22245e9e785a65e29
+      TELEMETRY_ENABLED: "true"
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "true"
+
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: NewClickhouseSecret789
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+
+      REDIS_HOST: redis
+      REDIS_PORT: "6378"
+      REDIS_AUTH: myredissecret
+      REDIS_TLS_ENABLED: "false"
+    depends_on:
+      init-perms: { condition: service_completed_successfully }
+      postgres:   { condition: service_healthy }
+      clickhouse: { condition: service_healthy }
+      redis:      { condition: service_healthy }
+      minio:      { condition: service_started }
+    networks: [langfuse-net]
+
+  # ---------------------------------------------------------------- web
+  langfuse-web:
+    image: langfuse/langfuse:3
+    restart: unless-stopped
+    mem_limit: 2g
+    ports:
+      - "3100:3000"
+    environment:
+      <<: *langfuse_env
+      NEXTAUTH_SECRET: 542c738b3169bd20fda69db20445aff3c81cdc5ec66effee1e22c73064e2c21b
+    depends_on:
+      init-perms: { condition: service_completed_successfully }
+      postgres:   { condition: service_healthy }
+      clickhouse: { condition: service_healthy }
+      redis:      { condition: service_healthy }
+      minio:      { condition: service_started }
+    networks: [langfuse-net]

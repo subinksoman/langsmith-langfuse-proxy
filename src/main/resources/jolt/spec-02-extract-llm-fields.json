@@ -1,0 +1,75 @@
+[
+  {
+    "operation": "shift",
+    "spec": {
+      "id": "run_id",
+      "trace_id": "trace_id",
+      "session_name": "session_id",
+      "name": "name",
+      "start_time": "start_time",
+      "end_time": "end_time",
+      "run_type": "run_type",
+      "parent_run_id": "parent_run_id",
+      "extra": {
+        "metadata": {
+          "ls_provider": "metadata.ls_provider",
+          "ls_model_name": "metadata.ls_model_name",
+          "ls_model_type": "metadata.ls_model_type",
+          "ls_temperature": "metadata.ls_temperature"
+        },
+        "invocation_params": {
+          "model": "model"
+        }
+      },
+      "inputs": {
+        "messages": {
+          "*": {
+            "*": {
+              "kwargs": {
+                "content": "input_messages[&3].content"
+              },
+              "id": {
+                "*": {
+                  "HumanMessage": {
+                    "#user": "input_messages[&5].role"
+                  },
+                  "AIMessage": {
+                    "#assistant": "input_messages[&5].role"
+                  },
+                  "SystemMessage": {
+                    "#system": "input_messages[&5].role"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "outputs": {
+        "generations": {
+          "0": {
+            "0": {
+              "text": "output.content"
+            }
+          }
+        },
+        "llmOutput": {
+          "tokenUsage": {
+            "promptTokens": "usage.input",
+            "completionTokens": "usage.output",
+            "totalTokens": "usage.total"
+          }
+        }
+      }
+    }
+  },
+  {
+    "operation": "default",
+    "spec": {
+      "output": {
+        "role": "assistant"
+      },
+      "model": "unknown"
+    }
+  }
+]

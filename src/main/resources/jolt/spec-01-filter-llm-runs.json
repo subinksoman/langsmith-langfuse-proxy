@@ -1,0 +1,21 @@
+[
+  {
+    "operation": "shift",
+    "spec": {
+      "post": {
+        "*": {
+          "run_type": {
+            "llm": {
+              "@2": "llm_runs[]"
+            }
+          }
+        }
+      },
+      "patch": {
+        "*": {
+          "@": "patches[]"
+        }
+      }
+    }
+  }
+]

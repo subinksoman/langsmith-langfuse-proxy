@@ -1,0 +1,140 @@
+{
+  "id": "supportSubagent",
+  "name": "Support Sub-agent",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "s1000000-0000-4000-8000-000000000001",
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -600,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "code": {
+          "execute": {
+            "code": "// AGENT in the sub-workflow - and the node that seeds this sub-execution.\n//\n// A sub-workflow runs under its OWN n8n execution id, so it inherits nothing\n// from the parent: the proxy's execution correlation is scoped to one\n// execution by design. Whatever identity the sub-workflow needs has to arrive\n// in its input and be declared again here.\n//\n// Which is why this is a LangChain Code node. n8n's native AI Agent node has no\n// field for run metadata, so a sub-workflow built only from Agent nodes cannot\n// attribute itself at all - its traces reach Langfuse with no session. One node\n// of this kind per execution is enough; the native agents beside it inherit via\n// the sub-execution's own id.\n\nconst { ChatPromptTemplate } = require('@langchain/core/prompts');\nconst { StringOutputParser } = require('@langchain/core/output_parsers');\n\nconst body = $input.first().json;\n\nconst sessionId = body.sessionId;\nconst msgId     = body.msg_id;\nconst userId    = body.user_id || 'sixdee';\nconst chatInput = body.chatInput || '';\n\nconst llm = await this.getInputConnectionData('ai_languageModel', 0);\n\nconst prompt = ChatPromptTemplate.fromMessages([\n  ['system', 'You are a sub-workflow specialist. Answer in one sentence.'],\n  ['human', '{question}'],\n]);\n\nconst chain = prompt.pipe(llm).pipe(new StringOutputParser()).withConfig({\n  runName: `subflow ${msgId}`,\n  tags: ['node:crm', `msg:${msgId}`, 'agent:subflow'],\n  metadata: {\n    node: 'crm',\n    session_id: sessionId,\n    msg_id: msgId,\n    user_id: userId,\n    workflow_name: 'Support Sub-agent',\n    agent: 'subflow',\n    execution_id: String($execution.id),\n    parent_execution_id: body.parent_execution_id || null,\n  },\n});\n\nconst answer = await chain.invoke({ question: chatInput });\n\nreturn [{ json: Object.assign({}, body, { subAnswer: answer }) }];\n"
+          }
+        },
+        "inputs": {
+          "input": [
+            {
+              "type": "main",
+              "required": true,
+              "maxConnections": 1
+            },
+            {
+              "type": "ai_languageModel",
+              "required": true,
+              "maxConnections": 1
+            }
+          ]
+        },
+        "outputs": {
+          "output": [
+            {
+              "type": "main"
+            }
+          ]
+        }
+      },
+      "id": "s1000000-0000-4000-8000-000000000004",
+      "name": "Sub Specialist",
+      "type": "@n8n/n8n-nodes-langchain.code",
+      "typeVersion": 1,
+      "position": [
+        -380,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ 'Rewrite in one short sentence: ' + $json.subAnswer }}",
+        "options": {
+          "systemMessage": "You are an editor. Reply with the sentence only."
+        }
+      },
+      "id": "s1000000-0000-4000-8000-000000000002",
+      "name": "Sub Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        -150,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-4o-mini",
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "id": "s1000000-0000-4000-8000-000000000003",
+      "name": "OpenRouter Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        -400,
+        220
+      ],
+      "credentials": {
+        "openRouterApi": {
+          "id": "openRouterCred",
+          "name": "OpenRouter"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Sub Specialist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sub Specialist": {
+      "main": [
+        [
+          {
+            "node": "Sub Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Sub Specialist",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Sub Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

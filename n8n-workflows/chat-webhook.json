@@ -1,0 +1,147 @@
+{
+  "id": "chatWebhookTest",
+  "name": "Chat Webhook (session + msg_id)",
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "chat",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -320,
+        0
+      ],
+      "webhookId": "chat-webhook-0001"
+    },
+    {
+      "parameters": {
+        "code": {
+          "execute": {
+            "code": "// One webhook call = one message = one Langfuse trace.\n//\n// sessionId and msg_id play different roles and must not be conflated:\n//   sessionId -> conversation context. It keys the chat memory, and the proxy\n//                maps metadata.session_id onto the Langfuse sessionId, so every\n//                trace of the conversation is grouped under one Session.\n//   msg_id    -> this single request. It identifies and correlates one webhook\n//                call, so it goes on the trace as metadata and as a tag you can\n//                filter on. A new one arrives with every message.\n\nconst { ChatPromptTemplate, MessagesPlaceholder } = require('@langchain/core/prompts');\nconst { StringOutputParser } = require('@langchain/core/output_parsers');\n\nconst body = $input.first().json.body || $input.first().json;\n\nconst sessionId = body.sessionId;\nconst msgId     = body.msg_id;\nconst question  = body.chatInput || (body.message && body.message.payload) || '';\n\nif (!sessionId) throw new Error('sessionId is required on the webhook payload');\nif (!msgId)     throw new Error('msg_id is required on the webhook payload');\n\nconst llm    = await this.getInputConnectionData('ai_languageModel', 0);\nconst memory = await this.getInputConnectionData('ai_memory', 0);\n\n// Conversation context belongs to the session, so it is loaded and saved under\n// sessionId \u2014 never under msg_id, which is unique per message and would make\n// every turn start from an empty history.\nconst history = memory ? (await memory.loadMemoryVariables({})).chat_history || [] : [];\n\nconst prompt = ChatPromptTemplate.fromMessages([\n  ['system', 'You are a concise assistant. Answer in one sentence.'],\n  new MessagesPlaceholder('chat_history'),\n  ['human', '{question}'],\n]);\n\nconst chain = prompt.pipe(llm).pipe(new StringOutputParser()).withConfig({\n  runName: `chat ${msgId}`,\n  tags: ['node:crm', `msg:${msgId}`],\n  metadata: {\n    node: 'crm',\n    session_id: sessionId,\n    msg_id: msgId,\n    user_id: body.user_id || 'anonymous',\n    route: body.route || null,\n    action: body.action || null,\n    workflow_name: 'Chat Webhook',\n  },\n});\n\nconst output = await chain.invoke({ question, chat_history: history });\n\nif (memory) await memory.saveContext({ input: question }, { output });\n\nreturn [{ json: { sessionId, msg_id: msgId, chatInput: question, output } }];\n"
+          }
+        },
+        "inputs": {
+          "input": [
+            {
+              "type": "main",
+              "required": true,
+              "maxConnections": 1
+            },
+            {
+              "type": "ai_languageModel",
+              "required": true,
+              "maxConnections": 1
+            },
+            {
+              "type": "ai_memory",
+              "required": false,
+              "maxConnections": 1
+            }
+          ]
+        },
+        "outputs": {
+          "output": [
+            {
+              "type": "main"
+            }
+          ]
+        }
+      },
+      "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "name": "crm",
+      "type": "@n8n/n8n-nodes-langchain.code",
+      "typeVersion": 1,
+      "position": [
+        -60,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4o-mini"
+        },
+        "options": {
+          "temperature": 0.3,
+          "maxTokens": 256
+        }
+      },
+      "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        -140,
+        220
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "mockOpenAiCred",
+          "name": "Mock OpenAI"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $json.body.sessionId }}",
+        "contextWindowLength": 20
+      },
+      "id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      "name": "Session Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        60,
+        220
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "crm",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "crm",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Session Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "crm",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

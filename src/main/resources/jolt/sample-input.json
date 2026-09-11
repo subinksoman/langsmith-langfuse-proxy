@@ -1,0 +1,155 @@
+{
+  "post": [
+    {
+      "session_name": "default",
+      "id": "46d17fa7-15f6-4fdb-b018-7266b95c433f",
+      "name": "ChatGroq",
+      "start_time": "2025-12-11T13:54:59.223006Z",
+      "end_time": "2025-12-11T13:54:59.461000Z",
+      "run_type": "llm",
+      "trace_id": "91c06284-f280-47b6-9343-0478a641a872",
+      "parent_run_id": "af4fb53f-d7b5-4097-85d6-eaddb800ca05",
+      "extra": {
+        "metadata": {
+          "ls_provider": "groq",
+          "ls_model_name": "llama-3.3-70b-versatile",
+          "ls_model_type": "chat",
+          "ls_temperature": 0.7
+        },
+        "invocation_params": {
+          "model": "llama-3.3-70b-versatile",
+          "temperature": 0.7
+        }
+      },
+      "inputs": {
+        "messages": [
+          [
+            {
+              "lc": 1,
+              "type": "constructor",
+              "id": ["langchain_core", "messages", "HumanMessage"],
+              "kwargs": {
+                "content": "hi tell a story in 10 words",
+                "additional_kwargs": {},
+                "response_metadata": {}
+              }
+            }
+          ]
+        ]
+      },
+      "outputs": {
+        "generations": [
+          [
+            {
+              "text": "The beautiful princess found her true love suddenly yesterday.",
+              "generationInfo": {
+                "finish_reason": "stop"
+              }
+            }
+          ]
+        ],
+        "llmOutput": {
+          "tokenUsage": {
+            "completionTokens": 11,
+            "promptTokens": 43,
+            "totalTokens": 54
+          }
+        }
+      }
+    },
+    {
+      "session_name": "default",
+      "id": "8305c5d5-52a3-4fe2-9ebe-bcd410c4ca9a",
+      "name": "ChatGroq",
+      "start_time": "2025-12-11T13:54:59.483005Z",
+      "run_type": "llm",
+      "trace_id": "3e751da7-37f0-449b-ad91-9aeea96a228b",
+      "parent_run_id": "26f50e4e-33af-47fe-9cea-301322944397",
+      "extra": {
+        "metadata": {
+          "ls_provider": "groq",
+          "ls_model_name": "allam-2-7b",
+          "ls_model_type": "chat",
+          "ls_temperature": 0.7
+        },
+        "invocation_params": {
+          "model": "allam-2-7b",
+          "temperature": 0.7
+        }
+      },
+      "inputs": {
+        "messages": [
+          [
+            {
+              "lc": 1,
+              "type": "constructor",
+              "id": ["langchain_core", "messages", "HumanMessage"],
+              "kwargs": {
+                "content": "hi tell a story in 10 words",
+                "additional_kwargs": {},
+                "response_metadata": {}
+              }
+            },
+            {
+              "lc": 1,
+              "type": "constructor",
+              "id": ["langchain_core", "messages", "AIMessage"],
+              "kwargs": {
+                "content": "The beautiful princess found her true love suddenly yesterday.",
+                "tool_calls": [],
+                "additional_kwargs": {},
+                "response_metadata": {}
+              }
+            },
+            {
+              "lc": 1,
+              "type": "constructor",
+              "id": ["langchain_core", "messages", "HumanMessage"],
+              "kwargs": {
+                "content": "continue the story",
+                "additional_kwargs": {},
+                "response_metadata": {}
+              }
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "session_name": "default",
+      "id": "chain-run-001",
+      "name": "AgentExecutor",
+      "start_time": "2025-12-11T13:54:59.217001Z",
+      "run_type": "chain",
+      "trace_id": "91c06284-f280-47b6-9343-0478a641a872",
+      "inputs": {
+        "input": "hi tell a story in 10 words"
+      }
+    }
+  ],
+  "patch": [
+    {
+      "id": "8305c5d5-52a3-4fe2-9ebe-bcd410c4ca9a",
+      "end_time": "2025-12-11T13:54:59.804000Z",
+      "outputs": {
+        "generations": [
+          [
+            {
+              "text": "Once upon a time, a princess met her love unexpectedly.",
+              "generationInfo": {
+                "finish_reason": "stop"
+              }
+            }
+          ]
+        ],
+        "llmOutput": {
+          "tokenUsage": {
+            "completionTokens": 28,
+            "promptTokens": 55,
+            "totalTokens": 83
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+[
+  {
+    "operation": "shift",
+    "spec": {
+      "run_id": "body.id",
+      "trace_id": "body.traceId",
+      "model": "body.model",
+      "end_time": ["body.endTime", "timestamp"],
+      "output": "body.output",
+      "usage": ["body.usage", "body.usageDetails"]
+    }
+  },
+  {
+    "operation": "default",
+    "spec": {
+      "type": "generation-update"
+    }
+  }
+]

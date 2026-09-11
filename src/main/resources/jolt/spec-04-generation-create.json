@@ -1,0 +1,23 @@
+[
+  {
+    "operation": "shift",
+    "spec": {
+      "run_id": "body.id",
+      "trace_id": "body.traceId",
+      "name": "body.name",
+      "start_time": ["body.startTime", "timestamp"],
+      "metadata": "body.metadata",
+      "input_messages": "body.input",
+      "model": "body.model"
+    }
+  },
+  {
+    "operation": "default",
+    "spec": {
+      "type": "generation-create",
+      "body": {
+        "modelParameters": {}
+      }
+    }
+  }
+]

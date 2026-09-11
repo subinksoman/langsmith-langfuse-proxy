@@ -1,0 +1,22 @@
+# Build output
+target/
+
+# Runtime logs (rotated by logback; never versioned)
+logs/
+*.log
+
+# Local environment overrides
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+*.iml
+.classpath
+.project
+.settings/
+
+# OS
+.DS_Store

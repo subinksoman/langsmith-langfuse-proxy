@@ -1,0 +1,166 @@
+# ===========================================================================
+# n8n + the LangSmith→Langfuse proxy, wired together for end-to-end testing.
+#
+#   docker compose -f langfuse.yaml      up -d     # Langfuse first (owns the network)
+#   docker compose -f docker-compose.n8n.yml up -d --build
+#
+#   n8n       http://localhost:5678
+#   Langfuse  http://localhost:3100
+#
+# n8n's LangChain nodes emit LangSmith traces whenever LANGCHAIN_TRACING_V2 is
+# set. Pointing LANGCHAIN_ENDPOINT at this proxy is the whole integration —
+# n8n believes it is talking to LangSmith, and the proxy rewrites each batch
+# into Langfuse ingestion events and forwards it.
+#
+# Routing to a per-node Langfuse project is driven by workflow metadata. In a
+# LangChain Code node, or any node that sets run metadata, set:
+#     metadata: { node: "crm", session_id: "<chat session>", user_id: "<user>" }
+# or tag the run "node:crm". The project keys live in config/application.properties
+# under langfuse.projects.<node>.
+# ===========================================================================
+
+name: n8n_langfuse_test
+
+networks:
+  # Created by langfuse.yaml. n8n, the proxy and Langfuse must share it so
+  # they can reach each other by service name.
+  langfuse-net:
+    name: langfuse-net-uat
+    external: true
+
+volumes:
+  n8n_data:
+
+services:
+
+  # ------------------------------------------------------------------ proxy
+  langsmith-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: langsmith-langfuse-proxy
+    image: langsmith-langfuse-proxy:1.0.0
+    # Published only so the test script can post fixtures straight at it.
+    # n8n reaches it in-network as http://langsmith-proxy:3001.
+    ports:
+      - "3001:3001"
+    environment:
+      SERVER_PORT: 3001
+
+      # Reached by service name on the shared network.
+      LANGFUSE_BASE_URL: http://langfuse-web:3000
+      LANGFUSE_INGESTION_ENDPOINT: /api/public/ingestion
+
+      # Catch-all project for traces whose n8n node is unknown.
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-0000}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-0000}
+
+      # Per-node project routing without editing application.properties. A map
+      # key here must equal the n8n node's display name (n8n injects it as
+      # metadata.node), a "node:<name>" tag, or metadata.node_name. E.g.
+      #   SPRING_APPLICATION_JSON='{"langfuse":{"projects":{"crm":{"public-key":"pk-...","secret-key":"sk-..."}}}}'
+      SPRING_APPLICATION_JSON: ${SPRING_APPLICATION_JSON:-{\}}
+
+      PROXY_LOG_REQUESTS: "true"
+      PROXY_LOG_RESPONSES: "true"
+      PROXY_TIMEOUT_SECONDS: "30"
+
+      # How long a run id stays resolvable to its trace. A LangSmith PATCH
+      # carries no trace_id, so this window is what lets the outputs, token
+      # usage and end time land on the trace the POST created.
+      PROXY_TRACE_CACHE_TTL_MINUTES: "180"
+      PROXY_TRACE_CACHE_MAX_ENTRIES: "20000"
+
+      JAVA_OPTS: -Xmx512m -Xms256m
+      SPRING_CONFIG_ADDITIONAL_LOCATION: file:/config/
+
+    # The image runs as uid 100 (spring), but a bind-mounted ./logs belongs to
+    # the host user, so logback cannot create proxy.log and the application
+    # dies during startup. Running as the host user keeps the mounted
+    # directory writable; the jar and /app are world-readable either way.
+    user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
+
+    volumes:
+      - ./logs:/app/logs
+      - ./config:/config
+
+    restart: unless-stopped
+    networks: [langfuse-net]
+
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+    logging:
+      driver: "json-file"
+      options: { max-size: "10m", max-file: "3" }
+
+  # ----------------------------------------------------------- mock-openai
+  # An OpenAI-compatible endpoint so the test workflow can actually run a
+  # model without a paid key. n8n's OpenAI credential points its Base URL here.
+  mock-openai:
+    image: node:22-alpine
+    container_name: mock-openai
+    working_dir: /app
+    command: ["node", "server.js"]
+    environment:
+      PORT: "8080"
+    volumes:
+      - ./scripts/mock-openai:/app:ro
+    restart: unless-stopped
+    networks: [langfuse-net]
+
+    logging:
+      driver: "json-file"
+      options: { max-size: "10m", max-file: "3" }
+
+  # -------------------------------------------------------------------- n8n
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n-langfuse-test
+    ports:
+      - "5678:5678"
+    environment:
+      N8N_HOST: localhost
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://localhost:5678/
+      GENERIC_TIMEZONE: Asia/Kolkata
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      # The LangChain Code node runs inside the task runner when this is on, and
+      # an object it returns crosses a process boundary — mutations made to a
+      # model instance there do not reach the agent that consumes it.
+      N8N_RUNNERS_ENABLED: "${N8N_RUNNERS_ENABLED:-false}"
+      # Test stack: skip the owner-setup wizard prompt noise.
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+
+      # ---- LangSmith tracing, pointed at the proxy -------------------------
+      # Both spellings are set: LangChain JS renamed these and different n8n
+      # releases bundle different SDK versions.
+      LANGCHAIN_TRACING_V2: "true"
+      LANGCHAIN_ENDPOINT: http://langsmith-proxy:3001
+      LANGCHAIN_API_KEY: lsv2-proxy-does-not-check-this
+      LANGCHAIN_PROJECT: n8n
+      LANGCHAIN_CALLBACKS_BACKGROUND: "false"
+
+      LANGSMITH_TRACING: "true"
+      LANGSMITH_ENDPOINT: http://langsmith-proxy:3001
+      LANGSMITH_API_KEY: lsv2-proxy-does-not-check-this
+      LANGSMITH_PROJECT: n8n
+
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+    depends_on:
+      langsmith-proxy: { condition: service_started }
+      mock-openai:     { condition: service_started }
+
+    restart: unless-stopped
+    networks: [langfuse-net]
+
+    logging:
+      driver: "json-file"
+      options: { max-size: "10m", max-file: "3" }
