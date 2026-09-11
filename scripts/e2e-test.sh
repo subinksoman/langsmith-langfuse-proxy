@@ -32,6 +32,19 @@ if [[ -z "$LF_PUBLIC_KEY" || -z "$LF_SECRET_KEY" ]]; then
 fi
 
 AUTH=$(printf '%s:%s' "$LF_PUBLIC_KEY" "$LF_SECRET_KEY" | base64 -w0)
+
+# Run timestamps must sit near "now". Langfuse resolves a trace's observations
+# with a time window around the trace timestamp, so hardcoded absolute times
+# pass in the morning and silently return zero observations later in the day.
+# The 0.1s -> 2.6s offsets keep the 2.5s latency the test asserts.
+# One epoch, two renderings, so the pair cannot straddle a second boundary.
+BASE_EPOCH=$(date -u -d '-60 seconds' +%s)
+BASE=$(date -u -d "@$BASE_EPOCH" +%Y-%m-%dT%H:%M:%S)
+BASE_PLUS2=$(date -u -d "@$((BASE_EPOCH + 2))" +%Y-%m-%dT%H:%M:%S)
+CHAIN_START="${BASE}.000000Z"
+LLM_START="${BASE}.100000Z"
+LLM_END="${BASE_PLUS2}.600000Z"
+CHAIN_END="${BASE_PLUS2}.700000Z"
 RUN_TAG="e2e-$(date +%s)"
 TRACE_ID="trace-$RUN_TAG"
 CHAIN_ID="chain-$RUN_TAG"
@@ -52,12 +65,12 @@ echo "=== 1. POST — runs start (LangSmith sends the descriptive half) ==="
 curl -sS -m 30 -X POST "$PROXY_URL/runs/batch" -H 'Content-Type: application/json' -d @- <<JSON
 {"post":[
  {"id":"$CHAIN_ID","name":"AgentExecutor","run_type":"chain","trace_id":"$TRACE_ID",
-  "start_time":"2026-09-11T10:00:00.000000Z",
+  "start_time":"$CHAIN_START",
   "inputs":{"input":"what is the weather in Kochi"},
   "extra":{"metadata":{"session_id":"$SESSION_ID","user_id":"subin","workflow_name":"Weather Agent","execution_id":"4242"}},
   "tags":["$RUN_TAG"]},
  {"id":"$LLM_ID","name":"ChatGroq","run_type":"llm","trace_id":"$TRACE_ID","parent_run_id":"$CHAIN_ID",
-  "start_time":"2026-09-11T10:00:00.100000Z",
+  "start_time":"$LLM_START",
   "extra":{"metadata":{"ls_provider":"groq","ls_model_name":"llama-3.3-70b-versatile","ls_temperature":0.7,"session_id":"$SESSION_ID"},
            "invocation_params":{"model":"llama-3.3-70b-versatile","temperature":0.7,"max_tokens":1024,"top_p":0.95}},
   "inputs":{"messages":[[
@@ -70,10 +83,10 @@ echo; echo
 echo "=== 2. PATCH — runs finish (separate request, no trace_id, no names) ==="
 curl -sS -m 30 -X POST "$PROXY_URL/runs/batch" -H 'Content-Type: application/json' -d @- <<JSON
 {"patch":[
- {"id":"$LLM_ID","end_time":"2026-09-11T10:00:02.600000Z",
+ {"id":"$LLM_ID","end_time":"$LLM_END",
   "outputs":{"generations":[[{"text":"Kochi is warm and humid, around 31C.","generationInfo":{"finish_reason":"stop"}}]],
              "llmOutput":{"tokenUsage":{"promptTokens":43,"completionTokens":11,"totalTokens":54}}}},
- {"id":"$CHAIN_ID","end_time":"2026-09-11T10:00:02.700000Z",
+ {"id":"$CHAIN_ID","end_time":"$CHAIN_END",
   "outputs":{"output":"Kochi is warm and humid, around 31C."}}
 ]}
 JSON

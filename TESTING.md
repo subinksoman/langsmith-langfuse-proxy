@@ -35,9 +35,15 @@ Map projects without editing `application.properties`:
 
 ```bash
 export SPRING_APPLICATION_JSON='{"langfuse":{"projects":{
-  "crm":{"public-key":"pk-lf-...","secret-key":"sk-lf-..."}}}}'
+  "crm":    {"public-key":"pk-lf-...","secret-key":"sk-lf-..."},
+  "weather":{"public-key":"pk-lf-...","secret-key":"sk-lf-..."}}}}'
 docker compose -f docker-compose.n8n.yml up -d --force-recreate langsmith-proxy
 ```
+
+The suites expect these project keys: `weather` (suite 3, routed by n8n node
+name) and `crm` (suites 5 and 6, routed by injected metadata). Point both at
+your test project. A missing mapping shows up as a routing assertion failing
+while everything else passes.
 
 Two ways to drive it from a workflow, both covered by suite 3:
 
@@ -215,3 +221,15 @@ EXEC  MSG_ID   AGENT          WORKFLOW             PARENT_EXEC   SESSION
 
 The sub-workflow's trigger uses `inputSource: passthrough`, so `sessionId`,
 `msg_id` and `user_id` arrive with the items and need no explicit mapping.
+
+## A fixture gotcha worth knowing
+
+Langfuse resolves a trace's observations with a **time window around the trace
+timestamp**. A fixture that hardcodes absolute `start_time` / `end_time` values
+therefore passes while the wall clock is near them and then returns *zero
+observations* hours later — with the trace itself still perfectly correct, which
+makes it look like the proxy dropped the observations.
+
+`scripts/e2e-test.sh` derives its run timestamps from `date -u` for this reason.
+If observation assertions fail while every trace-level assertion passes, check
+the fixture clock before suspecting the proxy.

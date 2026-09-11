@@ -73,8 +73,15 @@ public class LangfuseConfig {
         if (nodeName != null && !nodeName.isBlank()) {
             String key = nodeName.toLowerCase().trim();
 
-            if (projects.containsKey(key)) {
-                ProjectConfig found = projects.get(key);
+            ProjectConfig found = projects.get(key);
+            if (found != null && !hasCredentials(found)) {
+                // A project declared but never given keys is a half-finished
+                // config, not a routing target. Falling through to the default
+                // keeps the trace visible instead of failing the whole batch.
+                logger.warn("ROUTING: project '{}' is configured without credentials — using DEFAULT", key);
+                found = null;
+            }
+            if (found != null) {
                 logger.info("ROUTING: MATCHED project '{}' → pk={}", key,
                         found.getPublicKey() != null
                                 ? found.getPublicKey().substring(0, Math.min(12, found.getPublicKey().length())) + "..."
@@ -90,6 +97,11 @@ public class LangfuseConfig {
         def.setPublicKey(publicKey);
         def.setSecretKey(secretKey);
         return def;
+    }
+
+    private static boolean hasCredentials(ProjectConfig p) {
+        return p.getPublicKey() != null && !p.getPublicKey().isBlank()
+            && p.getSecretKey() != null && !p.getSecretKey().isBlank();
     }
 
     public String getIngestionUrl(ProjectConfig project) {

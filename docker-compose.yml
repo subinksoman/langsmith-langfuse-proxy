@@ -1,5 +1,3 @@
-version: '3.8'
-
 networks:
   langfuse-net:
     external: true
@@ -10,7 +8,10 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: langsmith-langfuse-proxy
-    image: langsmith-langfuse-proxy:1.0.0
+    image: subinksoman/langsmith-langfuse-proxy:2.0.0
+    # The image is not published yet, so prefer the local build over a registry
+    # pull that would fail. Drop this once it is on Docker Hub.
+    pull_policy: missing
     # No ports published - n8n reaches this via service name "langsmith-proxy" on langfuse-net
     environment:
       # Server Configuration

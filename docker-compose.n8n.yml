@@ -39,7 +39,10 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: langsmith-langfuse-proxy
-    image: langsmith-langfuse-proxy:1.0.0
+    image: subinksoman/langsmith-langfuse-proxy:2.0.0
+    # The image is not published yet, so prefer the local build over a registry
+    # pull that would fail. Drop this once it is on Docker Hub.
+    pull_policy: missing
     # Published only so the test script can post fixtures straight at it.
     # n8n reaches it in-network as http://langsmith-proxy:3001.
     ports:

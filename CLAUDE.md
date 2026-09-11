@@ -88,8 +88,24 @@ an execution sibling. Unresolved traces go to the default project.
 - Logs roll at 10MB, 30 archives, 500MB total; tune with `logging.file.*`.
   Per-request access lines are DEBUG — the healthcheck hits `/health` every 15s.
 
-## Known issue
+## Credentials
 
-`config/application.properties` and `src/main/resources/application.properties`
-hold real Langfuse keys in plain text. They should move to environment
-variables or a secret store before this repo is pushed anywhere shared.
+`src/main/resources/application.properties` is **packaged into the jar**, so
+anything written there ships inside the published image and is readable by
+anyone who pulls it (`unzip -p app.jar BOOT-INF/classes/application.properties`).
+It therefore carries no values: the default project reads
+`${LANGFUSE_PUBLIC_KEY:}` / `${LANGFUSE_SECRET_KEY:}`, and the per-node project
+map is commented out. Supply credentials at runtime instead:
+
+- `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` — the default project
+- `SPRING_APPLICATION_JSON` — the per-node map, e.g.
+  `{"langfuse":{"projects":{"crm":{"public-key":"pk-lf-...","secret-key":"sk-lf-..."}}}}`
+- or a mounted `config/application.properties` (see `docker-compose.n8n.yml`)
+
+A project present in the map but without credentials is treated as unconfigured
+and falls back to the default project, so a half-finished config loses routing
+rather than the whole batch.
+
+`config/application.properties` is a bind mount, never baked into the image —
+but it does hold real keys and is committed, so it should move to a secret
+store before this repo is shared.
