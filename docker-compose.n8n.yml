@@ -39,7 +39,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: langsmith-langfuse-proxy
-    image: subinksoman/langsmith-langfuse-proxy:3.0.0
+    image: subinksoman/langsmith-langfuse-proxy:3.0.1
     # Prefer a locally built image over a registry pull, so `--build` during
     # development is not silently overridden by the published tag.
     pull_policy: missing
@@ -145,10 +145,17 @@ services:
       # falls back to LANGCHAIN_<NAME>, so these are the ones that win:
       #   getLangSmithEnvironmentVariable(name) =
       #     env(`LANGSMITH_${name}`) || env(`LANGCHAIN_${name}`)
+      # Defaults point at the proxy. Override the endpoint and key to send the
+      # same traces to real LangSmith instead — useful for comparing what the
+      # proxy produces against the source of truth:
+      #   export LANGSMITH_ENDPOINT=https://api.smith.langchain.com
+      #   export LANGSMITH_API_KEY=lsv2_pt_...
+      # Kept out of this file on purpose: it is committed, and a key written
+      # here would be in git history permanently.
       LANGSMITH_TRACING: "true"
-      LANGSMITH_ENDPOINT: http://langsmith-proxy:3001
-      LANGSMITH_API_KEY: lsv2-proxy-does-not-check-this
-      LANGSMITH_PROJECT: n8n
+      LANGSMITH_ENDPOINT: ${LANGSMITH_ENDPOINT:-http://langsmith-proxy:3001}
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-lsv2-proxy-does-not-check-this}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-n8n}
 
       # Flush traces in the background rather than blocking the workflow on
       # them. Its only spelling is LANGSMITH_*; "false" is what disables it,
@@ -159,7 +166,7 @@ services:
       # directly — no LANGSMITH_ fallback — and defaults to
       # "http://localhost:1984" when it is unset. If any code path reaches it,
       # an unset value sends traces into the void rather than erroring.
-      LANGCHAIN_ENDPOINT: http://langsmith-proxy:3001
+      LANGCHAIN_ENDPOINT: ${LANGSMITH_ENDPOINT:-http://langsmith-proxy:3001}
 
     volumes:
       - n8n_data:/home/node/.n8n

@@ -179,7 +179,7 @@ public class TransformationService {
                 ObjectNode metadata = objectMapper.createObjectNode();
                 metadata.put("batch_size",      batch.size());
                 metadata.put("sdk_integration", "LANGCHAIN");
-                metadata.put("sdk_version",     "proxy-3.0.0");
+                metadata.put("sdk_version",     "proxy-3.0.1");
                 metadata.put("sdk_variant",     "langsmith-proxy");
                 metadata.put("public_key",      project.getPublicKey());
                 metadata.put("sdk_name",        "langsmith-langfuse-proxy");
@@ -1425,7 +1425,7 @@ public class TransformationService {
                     || model != null || (metadata != null && metadata.size() > 0));
 
         JsonNode output = hasOutputs ? extractOutput(llmRun) : null;
-        JsonNode usage  = hasOutputs ? extractUsage(llmRun)  : null;
+        UsageResult usage = hasOutputs ? extractUsage(llmRun) : null;
 
         logger.debug("LLM run {}: hasInput={}, hasOutputs={}, hasError={}, model={}, parent={}",
                      runId, hasInput, hasOutputs, hasErr, model, parentObsId);
@@ -1473,14 +1473,19 @@ public class TransformationService {
             } else {
                 if (output != null) body.set("output", output);
                 if (usage != null) {
-                    body.set("usage", usage);
-                    body.set("usageDetails", buildUsageDetails(usage));
+                    body.set("usage", usage.usage);
+                    body.set("usageDetails", buildUsageDetails(usage.usage));
                 }
                 // Carry the run metadata too: if Langfuse replaces rather than
                 // merges observation metadata, a metadata block holding only
                 // finish_reason would lose everything the create established.
                 ObjectNode updateMeta = objectMapper.createObjectNode();
                 if (metadata != null) updateMeta.setAll(metadata);
+                // An estimate is not a measurement, and Langfuse will price it
+                // as though it were. Say which one this is.
+                if (usage != null) {
+                    updateMeta.put("token_usage_source", usage.estimated ? "estimate" : "measured");
+                }
                 ObjectNode outMeta = extractOutputMetadata(llmRun);
                 if (outMeta != null) updateMeta.setAll(outMeta);
                 if (updateMeta.size() > 0) body.set("metadata", updateMeta);
@@ -2078,84 +2083,101 @@ public class TransformationService {
     // USAGE EXTRACTION
     // ========================================================================
 
-    private JsonNode extractUsage(JsonNode run) {
-        if (!run.has("outputs") || run.get("outputs").isNull()) return null;
-
-        JsonNode outputs = run.get("outputs");
-        int inputTokens  = 0;
-        int outputTokens = 0;
-        int totalTokens  = -1;
-        boolean found = false;
-
-        // Source 1-3: llmOutput block
-        if (outputs.has("llmOutput") && !outputs.get("llmOutput").isNull()) {
-            JsonNode llmOutput = outputs.get("llmOutput");
-
-            if (llmOutput.has("tokenUsage") && !llmOutput.get("tokenUsage").isNull()) {
-                JsonNode tu = llmOutput.get("tokenUsage");
-                int inp = getIntFrom(tu, "promptTokens", "prompt_tokens", "input_tokens", 0);
-                int out = getIntFrom(tu, "completionTokens", "completion_tokens", "output_tokens", 0);
-                int tot = getIntFrom(tu, "totalTokens", "total_tokens", null, -1);
-                if (inp > 0 || out > 0) { inputTokens = Math.max(inputTokens, inp); outputTokens = Math.max(outputTokens, out); if (tot > 0) totalTokens = tot; found = true; }
-            }
-
-            if (llmOutput.has("usage") && !llmOutput.get("usage").isNull()) {
-                JsonNode u = llmOutput.get("usage");
-                int inp = getIntFrom(u, "input_tokens", "promptTokens", "prompt_tokens", 0);
-                int out = getIntFrom(u, "output_tokens", "completionTokens", "completion_tokens", 0);
-                int tot = getIntFrom(u, "total_tokens", "totalTokens", null, -1);
-                if (inp > 0 || out > 0) { inputTokens = Math.max(inputTokens, inp); outputTokens = Math.max(outputTokens, out); if (tot > 0) totalTokens = tot; found = true; }
-            }
-
-            if (llmOutput.has("usage_metadata") && !llmOutput.get("usage_metadata").isNull()) {
-                JsonNode u = llmOutput.get("usage_metadata");
-                int inp = getIntFrom(u, "prompt_token_count", "input_tokens", "prompt_tokens", 0);
-                int out = getIntFrom(u, "candidates_token_count", "output_tokens", "completion_tokens", 0);
-                int tot = getIntFrom(u, "total_token_count", "total_tokens", null, -1);
-                if (inp > 0 || out > 0) { inputTokens = Math.max(inputTokens, inp); outputTokens = Math.max(outputTokens, out); if (tot > 0) totalTokens = tot; found = true; }
-            }
-        }
-
-        // Source 4-6: generation-level usage
-        if (outputs.has("generations") && outputs.get("generations").isArray()) {
-            JsonNode generations = outputs.get("generations");
-            if (generations.size() > 0) {
-                JsonNode firstGroup = generations.get(0);
-                JsonNode firstGen = firstGroup.isArray() && firstGroup.size() > 0 ? firstGroup.get(0) : firstGroup;
-
-                if (firstGen.has("message") && firstGen.get("message").has("kwargs")) {
-                    JsonNode kwargs = firstGen.get("message").get("kwargs");
-
-                    if (kwargs.has("usage_metadata") && !kwargs.get("usage_metadata").isNull()) {
-                        JsonNode u = kwargs.get("usage_metadata");
-                        int inp = getIntFrom(u, "input_tokens", "prompt_tokens", null, 0);
-                        int out = getIntFrom(u, "output_tokens", "completion_tokens", null, 0);
-                        int tot = getIntFrom(u, "total_tokens", null, null, -1);
-                        if (inp > 0 || out > 0) { inputTokens = Math.max(inputTokens, inp); outputTokens = Math.max(outputTokens, out); if (tot > 0) totalTokens = tot; found = true; }
-                    }
-
-                    if (kwargs.has("response_metadata") && !kwargs.get("response_metadata").isNull()) {
-                        JsonNode rm = kwargs.get("response_metadata");
-                        JsonNode usageSource = null;
-                        if (rm.has("usage") && !rm.get("usage").isNull()) usageSource = rm.get("usage");
-                        if (usageSource == null && rm.has("token_usage") && !rm.get("token_usage").isNull()) usageSource = rm.get("token_usage");
-
-                        if (usageSource != null) {
-                            int inp = getIntFrom(usageSource, "prompt_tokens", "input_tokens", null, 0);
-                            int out = getIntFrom(usageSource, "completion_tokens", "output_tokens", null, 0);
-                            int tot = getIntFrom(usageSource, "total_tokens", null, null, -1);
-                            if (inp > 0 || out > 0) { inputTokens = Math.max(inputTokens, inp); outputTokens = Math.max(outputTokens, out); if (tot > 0) totalTokens = tot; found = true; }
-                        }
-                    }
-                }
-            }
-        }
-
-        if (!found || (inputTokens == 0 && outputTokens == 0)) return null;
-        return buildUsageNode(inputTokens, outputTokens, totalTokens);
+    /** A usage triple and whether it was measured or estimated. */
+    private static final class UsageResult {
+        final ObjectNode usage;
+        final boolean estimated;
+        UsageResult(ObjectNode usage, boolean estimated) { this.usage = usage; this.estimated = estimated; }
     }
 
-    private JsonNode buildUsageNode(int input, int output, int total) {
+    /**
+     * The token usage for a run.
+     *
+     * Sources are tried in order and the FIRST that yields tokens wins, taken
+     * whole. They are not combined: a provider can report both a measured
+     * `tokenUsage` and LangChain's `tokenUsageEstimate`, and the two disagree
+     * wildly — 72 measured prompt tokens against 1840 estimated is typical for
+     * a tool-calling turn. Taking the larger of each field independently, as
+     * this used to, produced a triple that matched neither source and inflated
+     * cost.
+     *
+     * Measured usage always beats an estimate; the estimate is a fallback for
+     * providers that report nothing, which is better than showing no tokens at
+     * all as long as it is labelled.
+     */
+    private UsageResult extractUsage(JsonNode run) {
+        if (!run.has("outputs") || run.get("outputs").isNull()) return null;
+        JsonNode outputs = run.get("outputs");
+
+        JsonNode llmOutput = outputs.has("llmOutput") && !outputs.get("llmOutput").isNull()
+                ? outputs.get("llmOutput") : null;
+
+        JsonNode firstGen = firstGeneration(outputs);
+        JsonNode kwargs = (firstGen != null && firstGen.has("message"))
+                ? firstGen.get("message").get("kwargs") : null;
+        JsonNode responseMeta = (kwargs != null && kwargs.has("response_metadata")
+                                 && !kwargs.get("response_metadata").isNull())
+                ? kwargs.get("response_metadata") : null;
+
+        // ── measured, most specific first ─────────────────────────────────
+        ObjectNode u;
+        if ((u = readUsage(llmOutput,    "tokenUsage"))     != null) return new UsageResult(u, false);
+        if ((u = readUsage(llmOutput,    "usage"))          != null) return new UsageResult(u, false);
+        if ((u = readUsage(llmOutput,    "usage_metadata")) != null) return new UsageResult(u, false);
+        if ((u = readUsage(kwargs,       "usage_metadata")) != null) return new UsageResult(u, false);
+        if ((u = readUsage(responseMeta, "tokenUsage"))     != null) return new UsageResult(u, false);
+        if ((u = readUsage(responseMeta, "usage"))          != null) return new UsageResult(u, false);
+        if ((u = readUsage(responseMeta, "token_usage"))    != null) return new UsageResult(u, false);
+
+        // ── estimated, only when nothing measured it ──────────────────────
+        if ((u = readUsage(llmOutput,    "tokenUsageEstimate")) != null) return new UsageResult(u, true);
+        if ((u = readUsage(responseMeta, "tokenUsageEstimate")) != null) return new UsageResult(u, true);
+        if ((u = readUsage(kwargs,       "tokenUsageEstimate")) != null) return new UsageResult(u, true);
+
+        return null;
+    }
+
+    // Every spelling seen across OpenAI, Anthropic, Google and LangChain. They
+    // are tried within ONE block, so a match cannot mix two sources.
+    private static final String[] IN_KEYS  = {
+        "promptTokens", "prompt_tokens", "input_tokens", "inputTokens",
+        "prompt_token_count", "promptTokenCount"
+    };
+    private static final String[] OUT_KEYS = {
+        "completionTokens", "completion_tokens", "output_tokens", "outputTokens",
+        "candidates_token_count", "candidatesTokenCount"
+    };
+    private static final String[] TOT_KEYS = {
+        "totalTokens", "total_tokens", "total_token_count", "totalTokenCount"
+    };
+
+    /**
+     * Read one usage block whole, or null if it is absent or reports nothing.
+     *
+     * All three numbers come from the same block, so the triple stays
+     * internally consistent even though each field accepts several spellings.
+     */
+    private ObjectNode readUsage(JsonNode parent, String field) {
+        if (parent == null || !parent.has(field) || parent.get(field).isNull()) return null;
+        JsonNode n = parent.get(field);
+        if (!n.isObject()) return null;
+
+        int in    = firstInt(n, IN_KEYS,  0);
+        int out   = firstInt(n, OUT_KEYS, 0);
+        int total = firstInt(n, TOT_KEYS, -1);
+
+        if (in <= 0 && out <= 0) return null;
+        return buildUsageNode(in, out, total);
+    }
+
+    private int firstInt(JsonNode node, String[] keys, int defaultVal) {
+        for (String k : keys) {
+            if (node.has(k) && !node.get(k).isNull() && node.get(k).isNumber()) return node.get(k).asInt();
+        }
+        return defaultVal;
+    }
+
+    private ObjectNode buildUsageNode(int input, int output, int total) {
         if (input == 0 && output == 0) return null;
         int finalTotal = (total <= 0) ? input + output : total;
         ObjectNode usage = objectMapper.createObjectNode();

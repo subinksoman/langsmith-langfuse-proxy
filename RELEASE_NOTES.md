@@ -1,5 +1,31 @@
 # Release notes
 
+## 3.0.1
+
+Token usage: support `tokenUsageEstimate`, and stop combining sources.
+
+A provider can report a measured `tokenUsage` alongside LangChain's
+`tokenUsageEstimate`, and the two disagree sharply — 72 measured prompt tokens
+against 1840 estimated is typical for a tool-calling turn. Usage was previously
+assembled by taking the larger of each field across every source, which with
+both blocks present produced `promptTokens` from the estimate and
+`completionTokens` from the measurement: a triple matching neither, and a
+roughly 25x inflated prompt cost.
+
+- `tokenUsageEstimate` is now read, from `llmOutput`, `response_metadata` or
+  the message kwargs.
+- Each usage block is read **whole**. Sources are tried in order and the first
+  that reports tokens wins, so the three numbers always come from one place.
+- Measured usage always beats an estimate. The estimate is a fallback for
+  providers that report nothing.
+- An estimate is labelled `token_usage_source: "estimate"` on the observation,
+  because Langfuse prices it exactly as it prices measured tokens.
+
+Every usage shape previously recognised still is — `llmOutput.tokenUsage`,
+`.usage`, `.usage_metadata`, `kwargs.usage_metadata`,
+`response_metadata.usage` and `.token_usage` — now sharing one alias table
+covering the OpenAI, Anthropic, Google and LangChain spellings.
+
 ## 3.0.0
 
 One user message is now one Langfuse trace, and n8n no longer waits for Langfuse.
