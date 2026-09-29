@@ -11,6 +11,12 @@ const http = require('http');
 
 const PORT = process.env.PORT || 8080;
 
+// Some providers return no usage block at all — streaming responses, and
+// several non-OpenAI gateways. LangChain then estimates the counts itself and
+// reports them as tokenUsageEstimate instead of tokenUsage. Setting this
+// reproduces that, which is the only way to exercise the estimate path.
+const OMIT_USAGE = process.env.MOCK_OMIT_USAGE === 'true';
+
 const REPLY =
   'Kochi is warm and humid today, around 31 degrees Celsius with a chance of afternoon showers.';
 
@@ -84,7 +90,7 @@ const server = http.createServer((req, res) => {
       const promptTokens = countTokens(prompt);
       const completionTokens = countTokens(REPLY);
 
-      console.log(`  model=${body.model} messages=${(body.messages || []).length} tools=${(body.tools || []).length} stream=${!!body.stream}`);
+      console.log(`  model=${body.model} messages=${(body.messages || []).length} tools=${(body.tools || []).length} stream=${!!body.stream} usage=${OMIT_USAGE ? 'OMITTED' : 'included'}`);
 
       const decided = decide(body);
       const isToolCall = !!decided.tool_calls;
@@ -105,11 +111,13 @@ const server = http.createServer((req, res) => {
           logprobs: null,
           finish_reason: isToolCall ? 'tool_calls' : 'stop',
         }],
-        usage: {
-          prompt_tokens: promptTokens,
-          completion_tokens: completionTokens,
-          total_tokens: promptTokens + completionTokens,
-        },
+        ...(OMIT_USAGE ? {} : {
+          usage: {
+            prompt_tokens: promptTokens,
+            completion_tokens: completionTokens,
+            total_tokens: promptTokens + completionTokens,
+          },
+        }),
         system_fingerprint: 'fp_mock',
       };
 
