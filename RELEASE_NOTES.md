@@ -1,5 +1,57 @@
 # Release notes
 
+## 3.0.3
+
+A trace could show `metadata-only` as its input, permanently.
+
+A seeding `RunnablePassthrough` carries `{"input":"metadata-only"}` so it can
+pass `session_id` / `msg_id` / `node` to the proxy. Those runs were already
+excluded from the trace input, but `extractTraceInput` kept a last-resort
+fallback that accepted one anyway when a batch contained nothing else. That
+happens whenever the seeding node arrives ahead of the LLM runs, in a batch of
+its own.
+
+On its own the fallback was survivable, because a later batch could overwrite
+the input. Since 3.0.0 the trace input is written **once** — so the real
+question arriving afterwards could never replace it, and the trace showed
+`metadata-only` for good.
+
+The fallback is removed. A batch with nothing but metadata-only runs now leaves
+the input unset, and the next batch fills it in.
+
+If you cannot redeploy, declaring the question in the seeding node's metadata
+works on 3.0.0+ already, and takes priority over anything inferred:
+
+```js
+metadata: { node: 'crm', session_id: sessionId, msg_id: msgId,
+            user_input: chatInput }
+```
+
+Neither repairs traces already written.
+
+## 3.0.2
+
+The LangSmith handshake is now configurable instead of hardcoded.
+
+`GET /info` and `/runs/info` advertised `use_multipart_endpoint: true`
+unconditionally. That was right for langsmith-js 0.6.x — bundled in n8n 2.38,
+it posted multipart whatever the handshake said, which is why `/runs/multipart`
+exists at all — but newer clients honour the flag, so there was no way to steer
+them to the plain JSON endpoint.
+
+- `proxy.batch-ingest.use-multipart-endpoint` (default `true`, unchanged
+  behaviour). Set it `false` to route clients that honour the handshake to
+  `/runs/batch` instead. Both ingestion paths remain implemented; this only
+  decides which one the client picks.
+- `proxy.batch-ingest.size-limit-bytes` (default `20971520`) and
+  `proxy.batch-ingest.size-limit` (default `100`) are exposed alongside it.
+- `docker-compose.n8n.yml` gained a `PROXY_MULTIPART` knob for the flag, and
+  `N8N_IMAGE` so the n8n version can be pinned.
+
+Not verified: whether a given client actually honours the flag. 0.6.x did not.
+If yours ignores it, setting this false changes nothing and multipart continues
+to be used — which still works.
+
 ## 3.0.1
 
 Token usage: support `tokenUsageEstimate`, and stop combining sources.

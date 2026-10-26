@@ -42,6 +42,23 @@ public class ProxyController {
     @Value("${proxy.async.enabled:true}")
     private boolean asyncDelivery;
 
+    /**
+     * What the LangSmith handshake advertises for batch_ingest_config.
+     *
+     * Both ingestion paths are implemented, so this only steers which one the
+     * client picks. Older langsmith-js (0.6.x, bundled in n8n 2.38) ignored the
+     * flag and posted multipart regardless; newer clients honour it, so setting
+     * this false routes them to the plain JSON /runs/batch endpoint instead.
+     */
+    @Value("${proxy.batch-ingest.use-multipart-endpoint:true}")
+    private boolean advertiseMultipart;
+
+    @Value("${proxy.batch-ingest.size-limit-bytes:20971520}")
+    private long batchSizeLimitBytes;
+
+    @Value("${proxy.batch-ingest.size-limit:100}")
+    private int batchSizeLimit;
+
     @Autowired
     public ProxyController(TransformationService transformationService,
                           LangfuseService langfuseService,
@@ -205,7 +222,7 @@ public class ProxyController {
     public ResponseEntity<Map<String, String>> info() {
         return ResponseEntity.ok(Map.of(
             "service", "LangSmith to Langfuse Proxy",
-            "version", "3.0.1",
+            "version", "3.0.3",
             "description", "Converts LangSmith tracing data to Langfuse format"
         ));
     }
@@ -214,11 +231,11 @@ public class ProxyController {
                          "/version",   "/ok"})
     public ResponseEntity<Map<String, Object>> handleGetInfo() {
         return ResponseEntity.ok(Map.of(
-            "version", "3.0.1",
+            "version", "3.0.3",
             "batch_ingest_config", Map.of(
-                "use_multipart_endpoint", true,
-                "size_limit_bytes",       20971520,
-                "size_limit",             100
+                "use_multipart_endpoint", advertiseMultipart,
+                "size_limit_bytes",       batchSizeLimitBytes,
+                "size_limit",             batchSizeLimit
             )
         ));
     }

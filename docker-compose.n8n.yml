@@ -39,7 +39,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: langsmith-langfuse-proxy
-    image: subinksoman/langsmith-langfuse-proxy:3.0.1
+    image: subinksoman/langsmith-langfuse-proxy:3.0.3
     # Prefer a locally built image over a registry pull, so `--build` during
     # development is not silently overridden by the published tag.
     pull_policy: missing
@@ -67,6 +67,17 @@ services:
       PROXY_LOG_REQUESTS: "true"
       PROXY_LOG_RESPONSES: "true"
       PROXY_TIMEOUT_SECONDS: "30"
+
+      # What the LangSmith handshake advertises. Both ingestion paths are
+      # implemented, so this only steers which one the client picks: false
+      # routes clients that honour the flag to the plain JSON /runs/batch
+      # endpoint instead of /runs/multipart.
+      #
+      # Note that langsmith-js 0.6.x (n8n 2.38) ignored it and posted multipart
+      # regardless — which is why /runs/multipart exists. Setting this false is
+      # a request, not a guarantee; a client that ignores it keeps using
+      # multipart, and that still works.
+      PROXY_BATCH_INGEST_USE_MULTIPART_ENDPOINT: ${PROXY_MULTIPART:-false}
 
       # How long a run id stays resolvable to its trace. A LangSmith PATCH
       # carries no trace_id, so this window is what lets the outputs, token
@@ -111,6 +122,9 @@ services:
     command: ["node", "server.js"]
     environment:
       PORT: "8080"
+      # true = return no usage block, so LangChain falls back to estimating and
+      # emits tokenUsageEstimate. Used to exercise that path end to end.
+      MOCK_OMIT_USAGE: ${MOCK_OMIT_USAGE:-false}
     volumes:
       - ./scripts/mock-openai:/app:ro
     restart: unless-stopped
@@ -122,7 +136,7 @@ services:
 
   # -------------------------------------------------------------------- n8n
   n8n:
-    image: n8nio/n8n:latest
+    image: ${N8N_IMAGE:-n8nio/n8n:latest}
     container_name: n8n-langfuse-test
     ports:
       - "5678:5678"
@@ -153,7 +167,8 @@ services:
       # Kept out of this file on purpose: it is committed, and a key written
       # here would be in git history permanently.
       LANGSMITH_TRACING: "true"
-      LANGSMITH_ENDPOINT: ${LANGSMITH_ENDPOINT:-http://langsmith-proxy:3001}
+      LANGSMITH_ENDPOINT: ${LANGSMITH_ENDPOINT:-https://8e6c9310d4fa45218ca8af2f3a8a181c.api.mockbin.io/}
+      #LANGSMITH_ENDPOINT: ${LANGSMITH_ENDPOINT:-http://langsmith-proxy:3001}
       LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-lsv2-proxy-does-not-check-this}
       LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-n8n}
 
@@ -166,7 +181,8 @@ services:
       # directly — no LANGSMITH_ fallback — and defaults to
       # "http://localhost:1984" when it is unset. If any code path reaches it,
       # an unset value sends traces into the void rather than erroring.
-      LANGCHAIN_ENDPOINT: ${LANGSMITH_ENDPOINT:-http://langsmith-proxy:3001}
+      LANGCHAIN_ENDPOINT: ${LANGSMITH_ENDPOINT:-https://8e6c9310d4fa45218ca8af2f3a8a181c.api.mockbin.io/}
+      #LANGCHAIN_ENDPOINT: ${LANGSMITH_ENDPOINT:-http://langsmith-proxy:3001}
 
     volumes:
       - n8n_data:/home/node/.n8n

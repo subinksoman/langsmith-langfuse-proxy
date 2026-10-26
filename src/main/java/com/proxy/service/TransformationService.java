@@ -179,7 +179,7 @@ public class TransformationService {
                 ObjectNode metadata = objectMapper.createObjectNode();
                 metadata.put("batch_size",      batch.size());
                 metadata.put("sdk_integration", "LANGCHAIN");
-                metadata.put("sdk_version",     "proxy-3.0.1");
+                metadata.put("sdk_version",     "proxy-3.0.3");
                 metadata.put("sdk_variant",     "langsmith-proxy");
                 metadata.put("public_key",      project.getPublicKey());
                 metadata.put("sdk_name",        "langsmith-langfuse-proxy");
@@ -1061,7 +1061,6 @@ public class TransformationService {
         JsonNode llmInput      = null;
         JsonNode agentInput    = null;
         JsonNode anyRealInput  = null;
-        JsonNode fallbackInput = null;
 
         for (JsonNode run : allRuns) {
             if (!run.has("inputs") || run.get("inputs").isNull()) continue;
@@ -1092,17 +1091,19 @@ public class TransformationService {
             if (!metadataOnly && anyRealInput == null) {
                 anyRealInput = inputs;
             }
-
-            // Fallback: even metadata-only
-            if (fallbackInput == null) {
-                fallbackInput = inputs;
-            }
         }
 
         if (llmInput     != null) return llmInput;
         if (agentInput   != null) return agentInput;
-        if (anyRealInput != null) return anyRealInput;
-        return fallbackInput;
+        return anyRealInput;
+
+        // Deliberately no metadata-only fallback. A seeding RunnablePassthrough
+        // carries {"input":"metadata-only"}, and when it arrives in a batch of
+        // its own — ahead of the LLM runs — it used to be the only candidate
+        // and became the trace input. Since the input is written once, the real
+        // question arriving later could never replace it, so the trace showed
+        // "metadata-only" permanently. Returning null leaves the input unset
+        // and lets the next batch fill it.
     }
 
     /**
